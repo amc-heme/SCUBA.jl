@@ -1,0 +1,11 @@
+{
+  "rna_GAPDH": {
+    "class": "numeric"
+  },
+  "UMAP_1": {
+    "class": "numeric"
+  },
+  "Batch": {
+    "class": "character"
+  }
+}

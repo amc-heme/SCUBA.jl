@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "scuba-sc"
+version = "0.1.0"
+description = "Single Cell Unified Back-end API: one accessor API over AnnData, Seurat-derived and other single-cell containers, powered by SCUBA.jl"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [{ name = "SCUBA Authors" }]
+dependencies = ["juliacall>=0.9.20", "pandas>=2.0", "numpy>=1.24"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+
+[project.optional-dependencies]
+anndata = ["anndata>=0.11", "scipy>=1.10"]
+zarr = ["zarr>=2.18"]
+test = ["pytest>=8", "anndata>=0.11", "scipy>=1.10", "pyarrow"]
+
+[project.urls]
+Homepage = "https://github.com/amc-heme/SCUBA.jl"
+Documentation = "https://amc-heme.github.io/SCUBA.jl"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/scuba"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

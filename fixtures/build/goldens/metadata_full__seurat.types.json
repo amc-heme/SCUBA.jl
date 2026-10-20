@@ -1,0 +1,97 @@
+{
+  "orig.ident": {
+    "class": "character"
+  },
+  "nCount_RNA": {
+    "class": "numeric"
+  },
+  "nFeature_RNA": {
+    "class": "integer"
+  },
+  "nCount_AB": {
+    "class": "numeric"
+  },
+  "nFeature_AB": {
+    "class": "integer"
+  },
+  "nCount_BOTH": {
+    "class": "numeric"
+  },
+  "nFeature_BOTH": {
+    "class": "integer"
+  },
+  "BOTH_snn_res.0.9": {
+    "class": "character"
+  },
+  "seurat_clusters": {
+    "class": "factor",
+    "levels": ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14"],
+    "ordered": false
+  },
+  "Prediction_Ind": {
+    "class": "character"
+  },
+  "BOTH_snn_res.1": {
+    "class": "character"
+  },
+  "ClusterID": {
+    "class": "character"
+  },
+  "Batch": {
+    "class": "character"
+  },
+  "x": {
+    "class": "numeric"
+  },
+  "y": {
+    "class": "numeric"
+  },
+  "x_mean": {
+    "class": "numeric"
+  },
+  "y_mean": {
+    "class": "numeric"
+  },
+  "cor": {
+    "class": "numeric"
+  },
+  "ct": {
+    "class": "factor",
+    "levels": ["Plasma cells", "Late erythroid progenitor", "Non-classical monocytes", "Aberrant erythroid", "Myelocytes", "Late promyelocytes", "Conventional dendritic cell 1", "Conventional dendritic cell 2", "Classical Monocytes", "Megakaryocyte progenitors", "Early erythroid progenitor", "Lymphomyeloid prog", "Early promyelocytes", "Eosinophil-basophil-mast cell progenitors", "Plasmacytoid dendritic cell progenitors", "Pre-B cells", "CD56dimCD16+ NK cells", "Erythro-myeloid progenitors", "Class switched memory B cells", "HSCs & MPPs", "CD8+ central memory T cells", "Pro-B cells", "Nonswitched memory B cells", "Mesenchymal cells_1", "Plasmacytoid dendritic cells", "CD8+ effector memory T cells", "CD8+CD103+ tissue resident memory T cells", "CD69+PD-1+ memory CD4+ T cells", "CD4+ memory T cells", "Mature naive B cells", "Immature B cells", "CD56brightCD16- NK cells", "GammaDelta T cells", "CD8+ naive T cells", "CD11c+ memory B cells", "CD4+ cytotoxic T cells", "CD4+ naive T cells", "NK T cells"],
+    "ordered": false
+  },
+  "prop": {
+    "class": "numeric"
+  },
+  "meandist": {
+    "class": "numeric"
+  },
+  "cDC": {
+    "class": "numeric"
+  },
+  "B.cells": {
+    "class": "numeric"
+  },
+  "Myelocytes": {
+    "class": "numeric"
+  },
+  "Erythroid": {
+    "class": "numeric"
+  },
+  "Megakaryocte": {
+    "class": "numeric"
+  },
+  "Ident": {
+    "class": "factor",
+    "levels": ["Plasma cells", "Erythroid progenitors", "CD14+ CD16- Monocytes", "Myeloblasts", "Cycling MPPs", "Classical dendritic cells", "Megakaryocyte progenitors", "CD11c+ memory B cells", "CD14- CD16+ Monocytes", "Myelocytes", "Plasmacytoid dendritic cells", "CD8+ tissue resident memory T cells", "HSCs & MPPs", "Eosinophil-basophil-mast cell progenitors", "Immature B cells", "Isotype switched B cells", "CD16+ CD56- NK cells", "Class switched memory B cells", "Transitional B cells", "Gamma delta T cells", "CD8+ TEMRA", "CD4+ tissue resident memory T cells", "CD8+ central memory T cells", "Central memory / effector memory T cells", "CD4+ naive T cells", "Eosinophils", "CD8+ naive T cells", "CD16- CD56+ NK cells"],
+    "ordered": false
+  },
+  "RNA_snn_res.0.4": {
+    "class": "factor",
+    "levels": ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14"],
+    "ordered": false
+  },
+  "condensed_cell_type": {
+    "class": "character"
+  }
+}

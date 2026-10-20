@@ -1,0 +1,14 @@
+{
+  "rna_GAPDH": {
+    "class": "numeric"
+  },
+  "GAPDH": {
+    "class": "numeric"
+  },
+  "rna_MEIS1": {
+    "class": "numeric"
+  },
+  "MEIS1": {
+    "class": "numeric"
+  }
+}

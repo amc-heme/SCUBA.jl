@@ -1,0 +1,28 @@
+cff-version: 1.2.0
+title: SCUBA.jl
+message: "If you use SCUBA.jl, please cite the SCUBA paper below."
+type: software
+license: MIT
+repository-code: https://github.com/amc-heme/SCUBA.jl
+authors:
+  - family-names: Gillen
+    given-names: Austin
+    email: austin.gillen@cuanschutz.edu
+preferred-citation:
+  type: article
+  title: "SCUBA implements a storage format-agnostic API for single-cell data access in R"
+  authors:
+    - family-names: Showers
+      given-names: William
+    - family-names: Desai
+      given-names: Jairav
+    - family-names: Engel
+      given-names: Krysta
+    - family-names: Smith
+      given-names: Clayton
+    - family-names: Jordan
+      given-names: Craig
+    - family-names: Gillen
+      given-names: Austin
+  journal: F1000Research
+  year: 2024

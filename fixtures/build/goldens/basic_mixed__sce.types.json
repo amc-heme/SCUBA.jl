@@ -1,0 +1,23 @@
+{
+  "RNA_GAPDH": {
+    "class": "numeric"
+  },
+  "AB_CD117-AB": {
+    "class": "numeric"
+  },
+  "UMAP_1": {
+    "class": "numeric"
+  },
+  "UMAP_2": {
+    "class": "numeric"
+  },
+  "nCount_RNA": {
+    "class": "numeric"
+  },
+  "condensed_cell_type": {
+    "class": "character"
+  },
+  "Batch": {
+    "class": "character"
+  }
+}

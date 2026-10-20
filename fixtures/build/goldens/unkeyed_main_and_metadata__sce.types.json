@@ -1,0 +1,11 @@
+{
+  "GAPDH": {
+    "class": "numeric"
+  },
+  "MEIS1": {
+    "class": "numeric"
+  },
+  "nCount_RNA": {
+    "class": "numeric"
+  }
+}

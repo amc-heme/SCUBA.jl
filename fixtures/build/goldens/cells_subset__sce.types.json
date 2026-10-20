@@ -1,0 +1,8 @@
+{
+  "RNA_GAPDH": {
+    "class": "numeric"
+  },
+  "Batch": {
+    "class": "character"
+  }
+}

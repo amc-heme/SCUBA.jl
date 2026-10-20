@@ -1,0 +1,44 @@
+name: Bridges
+# Extension tests: Zarr.jl, PythonCall (anndata), RCall (SeuratObject, SingleCellExperiment, HDF5Array, BPCells).
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '17 5 * * 1'
+jobs:
+  bridges:
+    name: bridges - ${{ matrix.os }} - py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ['3.11', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1'
+      - uses: julia-actions/cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - run: pip install "anndata>=0.11" mudata zarr scipy pandas numpy
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true
+      - name: Install R packages
+        run: |
+          Rscript -e 'install.packages(c("BiocManager", "SeuratObject", "jsonlite"), repos = "https://cloud.r-project.org")'
+          Rscript -e 'BiocManager::install(c("SingleCellExperiment", "HDF5Array"), ask = FALSE, update = FALSE)'
+          Rscript -e 'install.packages("BPCells", repos = c("https://bnprks.r-universe.dev", "https://cloud.r-project.org"))' || true
+      - uses: julia-actions/julia-buildpkg@v1
+      - name: Run bridge tests
+        run: julia --project=. -e 'using Pkg; Pkg.test(test_args=["bridges"])'
+        env:
+          SCUBA_FIXTURES_DIR: ${{ github.workspace }}/fixtures/data
+          JULIA_CONDAPKG_BACKEND: Null
+          JULIA_PYTHONCALL_EXE: python
+          R_HOME: ${{ env.R_HOME }}

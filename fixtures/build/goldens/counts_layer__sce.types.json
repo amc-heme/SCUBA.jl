@@ -1,0 +1,8 @@
+{
+  "RNA_GAPDH": {
+    "class": "numeric"
+  },
+  "RNA_UNG": {
+    "class": "numeric"
+  }
+}

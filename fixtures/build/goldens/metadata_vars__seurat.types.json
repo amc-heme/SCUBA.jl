@@ -1,0 +1,13 @@
+{
+  "nCount_RNA": {
+    "class": "numeric"
+  },
+  "ct": {
+    "class": "factor",
+    "levels": ["Plasma cells", "Late erythroid progenitor", "Non-classical monocytes", "Aberrant erythroid", "Myelocytes", "Late promyelocytes", "Conventional dendritic cell 1", "Conventional dendritic cell 2", "Classical Monocytes", "Megakaryocyte progenitors", "Early erythroid progenitor", "Lymphomyeloid prog", "Early promyelocytes", "Eosinophil-basophil-mast cell progenitors", "Plasmacytoid dendritic cell progenitors", "Pre-B cells", "CD56dimCD16+ NK cells", "Erythro-myeloid progenitors", "Class switched memory B cells", "HSCs & MPPs", "CD8+ central memory T cells", "Pro-B cells", "Nonswitched memory B cells", "Mesenchymal cells_1", "Plasmacytoid dendritic cells", "CD8+ effector memory T cells", "CD8+CD103+ tissue resident memory T cells", "CD69+PD-1+ memory CD4+ T cells", "CD4+ memory T cells", "Mature naive B cells", "Immature B cells", "CD56brightCD16- NK cells", "GammaDelta T cells", "CD8+ naive T cells", "CD11c+ memory B cells", "CD4+ cytotoxic T cells", "CD4+ naive T cells", "NK T cells"],
+    "ordered": false
+  },
+  "prop": {
+    "class": "numeric"
+  }
+}

@@ -1,0 +1,220 @@
+{
+  "basic_mixed__seurat": {
+    "warnings": [],
+    "error": null,
+    "ncol": 7,
+    "colnames": ["rna_GAPDH", "ab_CD117-AB", "UMAP_1", "UMAP_2", "nCount_RNA", "condensed_cell_type", "Batch"]
+  },
+  "basic_mixed__sce": {
+    "warnings": [],
+    "error": null,
+    "ncol": 7,
+    "colnames": ["RNA_GAPDH", "AB_CD117-AB", "UMAP_1", "UMAP_2", "nCount_RNA", "condensed_cell_type", "Batch"]
+  },
+  "unkeyed_main_and_metadata__seurat": {
+    "warnings": [],
+    "error": null,
+    "ncol": 3,
+    "colnames": ["GAPDH", "MEIS1", "nCount_RNA"]
+  },
+  "unkeyed_main_and_metadata__sce": {
+    "warnings": [],
+    "error": null,
+    "ncol": 3,
+    "colnames": ["GAPDH", "MEIS1", "nCount_RNA"]
+  },
+  "unkeyed_alt_feature__seurat": {
+    "warnings": [
+      "Could not find CD11a-AB in the default search locations, found in ‘AB’ assay instead"
+    ],
+    "error": null,
+    "ncol": 1,
+    "colnames": "ab_CD11a-AB"
+  },
+  "unkeyed_alt_feature__sce": {
+    "warnings": [
+      "CD11a-AB was passed to fetch_data without specifying the key of the experiment to pull the feature from, and it is not present in the main experiment. The feature was found in ‘AB’ and successfully returned."
+    ],
+    "error": null,
+    "ncol": 1,
+    "colnames": "AB_CD11a-AB"
+  },
+  "partial_missing__seurat": {
+    "warnings": [
+      "The following features could not be found rna_MESS1"
+    ],
+    "error": "None of the requested features found",
+    "ncol": null,
+    "colnames": null
+  },
+  "partial_missing__sce": {
+    "warnings": [
+      "The following requested variables were not found: nonsense, RNA_MESS1, AB_CD1110-AB, UMAP_11"
+    ],
+    "error": null,
+    "ncol": 1,
+    "colnames": "RNA_GAPDH"
+  },
+  "all_missing__seurat": {
+    "warnings": [],
+    "error": "None of the requested features found",
+    "ncol": null,
+    "colnames": null
+  },
+  "all_missing__sce": {
+    "warnings": [],
+    "error": "None of the requested variables were found: AB_CD900",
+    "ncol": null,
+    "colnames": null
+  },
+  "duplicates_literal__seurat": {
+    "warnings": [],
+    "error": null,
+    "ncol": 2,
+    "colnames": ["rna_GAPDH", "rna_MEIS1"]
+  },
+  "duplicates_literal__sce": {
+    "warnings": [
+      "The following entries to `vars` are duplicates: 'RNA_GAPDH', 'RNA_MEIS1'. Only one entry for each duplicated var will be returned."
+    ],
+    "error": null,
+    "ncol": 2,
+    "colnames": ["RNA_GAPDH", "RNA_MEIS1"]
+  },
+  "duplicates_key_equivalent__seurat": {
+    "warnings": [],
+    "error": null,
+    "ncol": 4,
+    "colnames": ["rna_GAPDH", "GAPDH", "rna_MEIS1", "MEIS1"]
+  },
+  "duplicates_key_equivalent__sce": {
+    "warnings": [
+      "The entries to `vars` 'GAPDH', 'MEIS1' are the same as the entries 'RNA_GAPDH', 'RNA_MEIS1'. Only one entry for each of these variables will be returned."
+    ],
+    "error": null,
+    "ncol": 2,
+    "colnames": ["RNA_GAPDH", "RNA_MEIS1"]
+  },
+  "counts_layer__seurat": {
+    "warnings": [],
+    "error": null,
+    "ncol": 2,
+    "colnames": ["rna_GAPDH", "rna_UNG"]
+  },
+  "counts_layer__sce": {
+    "warnings": [],
+    "error": null,
+    "ncol": 2,
+    "colnames": ["RNA_GAPDH", "RNA_UNG"]
+  },
+  "cells_subset__seurat": {
+    "warnings": [],
+    "error": null,
+    "ncol": 3,
+    "colnames": ["rna_GAPDH", "UMAP_1", "Batch"]
+  },
+  "cells_subset__sce": {
+    "warnings": [
+      "The following requested variables were not found: UMAP_1"
+    ],
+    "error": null,
+    "ncol": 2,
+    "colnames": ["RNA_GAPDH", "Batch"]
+  },
+  "reduction_default__seurat": {
+    "warnings": [],
+    "error": null,
+    "ncol": 2,
+    "colnames": ["UMAP_1", "UMAP_2"]
+  },
+  "reduction_default__sce": {
+    "warnings": [],
+    "error": null,
+    "ncol": 2,
+    "colnames": ["UMAP_1", "UMAP_2"]
+  },
+  "metadata_full__seurat": {
+    "warnings": [],
+    "error": null,
+    "ncol": 29,
+    "colnames": ["orig.ident", "nCount_RNA", "nFeature_RNA", "nCount_AB", "nFeature_AB", "nCount_BOTH", "nFeature_BOTH", "BOTH_snn_res.0.9", "seurat_clusters", "Prediction_Ind", "BOTH_snn_res.1", "ClusterID", "Batch", "x", "y", "x_mean", "y_mean", "cor", "ct", "prop", "meandist", "cDC", "B.cells", "Myelocytes", "Erythroid", "Megakaryocte", "Ident", "RNA_snn_res.0.4", "condensed_cell_type"]
+  },
+  "metadata_full__sce": {
+    "warnings": [],
+    "error": null,
+    "ncol": 30,
+    "colnames": ["orig.ident", "nCount_RNA", "nFeature_RNA", "nCount_AB", "nFeature_AB", "nCount_BOTH", "nFeature_BOTH", "BOTH_snn_res.0.9", "seurat_clusters", "Prediction_Ind", "BOTH_snn_res.1", "ClusterID", "Batch", "x", "y", "x_mean", "y_mean", "cor", "ct", "prop", "meandist", "cDC", "B.cells", "Myelocytes", "Erythroid", "Megakaryocte", "Ident", "RNA_snn_res.0.4", "condensed_cell_type", "ident"]
+  },
+  "metadata_vars__seurat": {
+    "warnings": [],
+    "error": null,
+    "ncol": 3,
+    "colnames": ["nCount_RNA", "ct", "prop"]
+  },
+  "metadata_vars__sce": {
+    "warnings": [],
+    "error": null,
+    "ncol": 3,
+    "colnames": ["nCount_RNA", "ct", "prop"]
+  },
+  "metadata_missing__seurat": {
+    "warnings": [],
+    "error": "\nThe following variables entered in `vars` were not found in \nthe object: nonsense. \n\nTo view available entries for your object, run SCUBA::meta_varnames().",
+    "ncol": null,
+    "colnames": null
+  },
+  "metadata_missing__sce": {
+    "warnings": [],
+    "error": "\nThe following variables entered in `vars` were not found in \nthe object: nonsense. \n\nTo view available entries for your object, run SCUBA::meta_varnames().",
+    "ncol": null,
+    "colnames": null
+  },
+  "cells_by_batch__seurat": {
+    "warnings": [],
+    "error": null,
+    "ncol": null,
+    "colnames": null
+  },
+  "cells_by_batch__sce": {
+    "warnings": [],
+    "error": null,
+    "ncol": null,
+    "colnames": null
+  },
+  "cells_numeric_var__seurat": {
+    "warnings": [],
+    "error": "nCount_RNA is not a categorical variable. Only categorical variables are supported by fetch_cells at this time.",
+    "ncol": null,
+    "colnames": null
+  },
+  "cells_numeric_var__sce": {
+    "warnings": [],
+    "error": "nCount_RNA is not a categorical variable. Only categorical variables are supported by fetch_cells at this time.",
+    "ncol": null,
+    "colnames": null
+  },
+  "unique_cell_types__seurat": {
+    "warnings": [],
+    "error": null,
+    "ncol": null,
+    "colnames": null
+  },
+  "unique_cell_types__sce": {
+    "warnings": [],
+    "error": null,
+    "ncol": null,
+    "colnames": null
+  },
+  "meta_varnames__seurat": {
+    "warnings": [],
+    "error": null,
+    "ncol": null,
+    "colnames": null
+  },
+  "meta_varnames__sce": {
+    "warnings": [],
+    "error": null,
+    "ncol": null,
+    "colnames": null
+  }
+}

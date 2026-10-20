@@ -1,0 +1,10 @@
+{
+  "julia": "~1.10, ~1.11, ~1.12, ~1.13",
+  "packages": {
+    "SCUBA": {"uuid": "7f663172-f634-479e-81eb-23756a6959e3", "dev": true, "path": "../../.."},
+    "PythonCall": {"uuid": "6099a3de-0909-46bc-b1f4-468b9a2dfc0d"},
+    "DataFrames": {"uuid": "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"},
+    "CategoricalArrays": {"uuid": "324d7699-5711-5eae-9e2f-1d82baa6b597"},
+    "Zarr": {"uuid": "0a941bbe-ad1d-11e8-39d9-ab76183a1d99"}
+  }
+}
