@@ -38,7 +38,6 @@ jobs:
       - name: Run bridge tests
         run: julia --project=. -e 'using Pkg; Pkg.test(test_args=["bridges"])'
         env:
-          SCUBA_FIXTURES_DIR: ${{ github.workspace }}/fixtures/data
           JULIA_CONDAPKG_BACKEND: Null
           JULIA_PYTHONCALL_EXE: python
           R_HOME: ${{ env.R_HOME }}

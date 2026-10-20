@@ -1,0 +1,7 @@
+[scuba_fixtures]
+git-tree-sha1 = "0b0da2a9fe896b9d10a0b819039569bd81bfee23"
+lazy = true
+
+    [[scuba_fixtures.download]]
+    url = "https://github.com/amc-heme/SCUBA.jl/releases/download/fixtures-v1/scuba-fixtures-v1.tar.gz"
+    sha256 = "500f0c5ddc9cdc87dff999fb15fcdff49ce62f9b2c6a056284683b330e403b0c"

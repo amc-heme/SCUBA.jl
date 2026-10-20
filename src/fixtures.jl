@@ -11,9 +11,10 @@ variable, a `fixtures/data` directory in a development checkout, then the lazy
 """
 function fixtures_dir()
     env = get(ENV, FIXTURES_ENV, "")
-    isempty(env) || return env
+    isempty(env) || isdir(env) || @warn "$FIXTURES_ENV is set but is not a directory; ignoring" env
+    isempty(env) || !isdir(env) || return env
     dev = normpath(joinpath(@__DIR__, "..", "fixtures", "data"))
-    isdir(dev) && return dev
+    isdir(dev) && isfile(joinpath(dev, "AML_h5ad.h5ad")) && return dev
     toml = joinpath(@__DIR__, "..", "Artifacts.toml")
     if isfile(toml) && artifact_hash("scuba_fixtures", toml) !== nothing
         LazyArtifacts.ensure_artifact_installed("scuba_fixtures", toml)
