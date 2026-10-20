@@ -14,6 +14,8 @@ ok <- df %>% filter(status == "ok", !(checksum_ok %in% c(FALSE)))
 scale_cells <- c("10k" = 1e4, "100k" = 1e5, "1M" = 1e6, "3M" = 3e6)
 ok$cells <- scale_cells[ok$scale]
 ok$impl <- ifelse(ok$language == "r", paste0(ok$implementation, " [", ok$engine, "]"), ok$implementation)
+ok$lang <- factor(c(julia = "Julia (SCUBA.jl)", r = "R (SCUBA)", python = "Python")[ok$language], levels = c("Julia (SCUBA.jl)", "R (SCUBA)", "Python"))
+x_cells <- scale_x_log10(breaks = c(1e4, 1e5, 1e6, 3e6), labels = c("10k", "100k", "1M", "3M"))
 
 # Fixed implementation -> colour slot assignment (reference palette, categorical slots in fixed order per language)
 LANG_LABEL <- c(julia = "Julia (SCUBA.jl)", r = "R (SCUBA)", python = "Python")
@@ -35,30 +37,35 @@ theme_bench <- function() theme_minimal(base_size = 11) +
 save <- function(p, name, w = 10, h = 6) ggsave(file.path(fig, paste0(name, ".png")), p, width = w, height = h, dpi = 150, bg = "#fcfcfb")
 
 summ <- ok %>% filter(phase == "fetch") %>%
-  group_by(language, impl, implementation, engine, scale, cells, workload, n_features, cell_subset, layer, cache_state) %>%
+  group_by(language, lang, impl, implementation, engine, scale, cells, workload, n_features, cell_subset, layer, cache_state) %>%
   summarise(median_ms = median(wall_ms, na.rm = TRUE), q25 = quantile(wall_ms, .25, na.rm = TRUE), q75 = quantile(wall_ms, .75, na.rm = TRUE),
             min_ms = min(wall_ms, na.rm = TRUE), n = n(), .groups = "drop")
 
-## 1. Scaling curves: feature fetches ------------------------------------------------------------
+## 1. Scaling curves: feature fetches (one figure per cell subset; panels = language x genes) --------
 feat <- summ %>% filter(workload == "feature", layer == "data", cache_state == "warm", cell_subset %in% c("all", "rand10"))
 if (nrow(feat) > 1 && length(unique(feat$scale)) > 1) {
-  p <- ggplot(feat, aes(cells, median_ms, colour = impl, group = impl)) +
-    geom_line(linewidth = 0.7) + geom_point(size = 2.2) +
-    facet_grid(cell_subset ~ n_features, labeller = labeller(n_features = function(x) paste(x, "genes"), cell_subset = c(all = "all cells", rand10 = "10% random cells"))) +
-    scale_x_log10(labels = scales::label_comma()) + scale_y_log10(labels = scales::label_comma()) +
-    scale_colour_manual(values = cols, name = NULL, drop = TRUE) +
-    labs(title = "Feature fetch time vs dataset size (median of warm repetitions)", x = "cells", y = "wall time (ms)") + theme_bench() + guides(colour = guide_legend(ncol = 4))
-  save(p, "scaling_features", 12, 7)
+  for (sub in c("all", "rand10")) {
+    d <- feat %>% filter(cell_subset == sub)
+    p <- ggplot(d, aes(cells, median_ms, colour = impl, group = impl)) +
+      geom_line(linewidth = 0.7) + geom_point(size = 2.2) +
+      facet_grid(lang ~ n_features, labeller = labeller(n_features = function(x) paste(x, "genes"))) +
+      x_cells + scale_y_log10(labels = scales::label_comma()) +
+      scale_colour_manual(values = cols, name = NULL, drop = TRUE) +
+      labs(title = sprintf("Feature fetch time vs dataset size, %s (median of warm repetitions)", c(all = "all cells", rand10 = "10%% random cells")[sub]),
+           x = "cells", y = "wall time (ms, log)") + theme_bench() + guides(colour = guide_legend(ncol = 4))
+    save(p, paste0("scaling_features_", sub), 12, 8)
+  }
 }
-## 2. Per-scale bars: feature fetch by n_features (all cells) ---------------------------------------
+## 2. Per-scale bars: feature fetch by n_features (all cells), panels per language -----------------------
 for (sc in unique(feat$scale)) {
   d <- feat %>% filter(scale == sc, cell_subset == "all")
   p <- ggplot(d, aes(factor(n_features), median_ms, fill = impl)) +
     geom_col(position = position_dodge(width = 0.85), width = 0.8) +
     geom_errorbar(aes(ymin = q25, ymax = q75), position = position_dodge(width = 0.85), width = 0.25, linewidth = 0.3, colour = "#52514e") +
+    facet_wrap(~lang, nrow = 1) +
     scale_y_log10(labels = scales::label_comma()) + scale_fill_manual(values = cols, name = NULL) +
     labs(title = sprintf("Feature fetch, all cells, %s cells (median, IQR)", sc), x = "genes requested", y = "wall time (ms, log)") + theme_bench() + guides(fill = guide_legend(ncol = 4))
-  save(p, paste0("features_", sc), 11, 6)
+  save(p, paste0("features_", sc), 12, 6)
 }
 ## 3. Metadata / reductions / cells --------------------------------------------------------------------
 other <- summ %>% filter(grepl("^(metadata|reduction|fetch_cells|unique_values)", workload), cache_state == "warm")
@@ -66,6 +73,7 @@ if (nrow(other)) {
   for (sc in unique(other$scale)) {
     d <- other %>% filter(scale == sc)
     p <- ggplot(d, aes(workload, median_ms, fill = impl)) + geom_col(position = position_dodge(width = 0.85), width = 0.8) +
+      facet_wrap(~lang, nrow = 1) +
       scale_y_log10(labels = scales::label_comma()) + scale_fill_manual(values = cols, name = NULL) + coord_flip() +
       labs(title = sprintf("Metadata, reductions and cell queries, %s cells (median)", sc), x = NULL, y = "wall time (ms, log)") + theme_bench() + guides(fill = guide_legend(ncol = 4))
     save(p, paste0("other_", sc), 11, 7)
@@ -85,11 +93,11 @@ if (nrow(cold_pairs)) {
 }
 ## 5. Memory ----------------------------------------------------------------------------------------------
 mem <- ok %>% filter(phase == "fetch", cache_state == "warm", workload == "feature", n_features == 1000, cell_subset == "all") %>%
-  group_by(impl, scale) %>% summarise(maxrss_mb = max(maxrss_mb, na.rm = TRUE), alloc_mb = median(alloc_mb, na.rm = TRUE), .groups = "drop") %>%
+  group_by(lang, impl, scale) %>% summarise(maxrss_mb = max(maxrss_mb, na.rm = TRUE), alloc_mb = median(alloc_mb, na.rm = TRUE), .groups = "drop") %>%
   pivot_longer(c(maxrss_mb, alloc_mb), names_to = "metric", values_to = "mb") %>% filter(is.finite(mb))
 if (nrow(mem)) {
   p <- ggplot(mem, aes(scale, mb, fill = impl)) + geom_col(position = position_dodge(width = 0.85), width = 0.8) +
-    facet_wrap(~metric, scales = "free_y", labeller = labeller(metric = c(maxrss_mb = "peak process RSS (MB)", alloc_mb = "allocation during a 1000-gene fetch (MB)"))) +
+    facet_grid(metric ~ lang, scales = "free_y", labeller = labeller(metric = c(maxrss_mb = "peak process RSS (MB)", alloc_mb = "allocation during a 1000-gene fetch (MB)"))) +
     scale_fill_manual(values = cols, name = NULL) + labs(title = "Memory", x = "cells", y = "MB") + theme_bench() + guides(fill = guide_legend(ncol = 4))
   save(p, "memory", 12, 6)
 }
