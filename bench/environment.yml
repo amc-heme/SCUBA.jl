@@ -1,0 +1,16 @@
+# Additions to the `scuba-fixtures` conda env used by the generator and the Python harness.
+#   conda env update -n scuba-fixtures -f bench/environment.yml
+name: scuba-fixtures
+channels: [conda-forge]
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+      - "anndata>=0.11"
+      - h5py
+      - scipy
+      - numpy
+      - pandas
+      - pyarrow
+      - psutil
+      - juliacall

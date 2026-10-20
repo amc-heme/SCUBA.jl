@@ -1,0 +1,98 @@
+# SCUBA benchmark suite configuration. Parsed by Julia (TOML stdlib), Python (tomllib) and R (RcppTOML).
+
+[suite]
+version = "0.1.0"
+run_id = ""                                   # empty -> timestamp chosen by the driver
+data_dir = "~/scuba-bench-data"               # datasets live outside the repository
+results_dir = "results"                       # relative to bench/
+conda_env = "scuba-fixtures"
+r_scuba_path = "~/build/SCUBA"                # for git SHA capture only
+julia_project = "."                           # bench/Project.toml
+
+[scales.10k]
+cells = 10000
+genes = 25000
+nnz_per_cell = 1500
+seed = 101
+
+[scales.100k]
+cells = 100000
+genes = 25000
+nnz_per_cell = 1500
+seed = 102
+
+[scales.1M]
+cells = 1000000
+genes = 25000
+nnz_per_cell = 1500
+seed = 103
+
+[scales.3M]
+cells = 3000000
+genes = 25000
+nnz_per_cell = 1500
+seed = 104
+optional = true
+csr_layers = ["X"]                            # drop the counts layer from the csr file at this scale
+
+[generation]
+block_cells = 20000                           # cells generated per block
+gene_mean_log_mu = -1.0
+gene_mean_log_sigma = 1.5
+size_factor_log_sigma = 0.3
+gene_selection_seed = 7                       # gene sets are identical across scales
+bpcells_from = "csr"                          # the h5ad file BPCells directories are converted from
+bpcells_gene_major = false                    # also write gene-major (row-major) BPCells dirs
+
+[workloads]
+n_features = [1, 10, 100, 1000]
+gene_set_reps = 3
+cell_subsets = ["all", "rand1", "rand10", "contig1", "contig10"]
+layers_all_sets = ["data"]                    # layer(s) fetched for every gene set
+layers_first_set = ["counts"]                 # extra layer(s) fetched for gene set 0 only
+metadata = ["full", "cell_type", "nCount_RNA"]
+reductions = [{ name = "X_umap", dims = [1, 2] }, { name = "X_pca", dims = [1, 2] }, { name = "X_pca", dims = [1, 50] }]
+fetch_cells = ["cell_type:T_cell", "batch:b3"]
+unique_values = ["cell_type", "sample"]
+
+[reps]
+warm = 5
+discard_first = 1
+timeout_s = 600
+reduce_reps_above_s = 30                      # record a single warm repetition when the first call is slower than this
+[reps.cold]
+"10k" = 3
+"100k" = 3
+"1M" = 2
+"3M" = 1
+
+[skip]
+# "impl=<implementation> scale=<scale> [n_features>=N] [workload=<w>]"
+rules = [
+  "impl=jl_h5ad_csr scale=1M n_features>=10",      # csr feature fetch scans the whole matrix (~100 s per call at 1M)
+  "impl=jl_h5ad_csr scale=3M n_features>=10",
+  "impl=jl_h5ad_csr scale=3M workload=matrix_sparse",
+  "impl=r_sce_backed scale=3M",
+  "impl=r_seurat_inmem scale=3M",
+  "impl=raw_seurat_fetchdata scale=3M",
+]
+extrapolation_factor = 2.0                    # skip when previous-scale median * cell ratio * factor > timeout
+
+[concurrency]
+n = [1, 2, 4, 8, 16]
+duration_s = 60
+warmup_s = 10
+checksum_fraction = 0.05
+[concurrency.mix]
+feature1_all = 0.5
+feature10_rand10 = 0.2
+meta_col = 0.1
+reduction = 0.1
+fetch_cells = 0.1
+
+[implementations]
+julia = ["jl_h5ad_csc", "jl_h5ad_csr", "jl_bpcells", "jl_snapshot"]
+r_legacy = ["r_seurat_bpcells", "r_sce_backed", "r_anndata_backed", "raw_bpcells_r", "raw_seurat_fetchdata"]
+r_julia = ["r_seurat_bpcells", "r_sce_backed"]
+python = ["raw_anndata_py", "raw_h5py_py", "py_scuba_sc"]
+optional = ["r_seurat_inmem", "raw_seurat_fetchdata", "jl_snapshot"]

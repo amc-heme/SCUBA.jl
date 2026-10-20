@@ -31,7 +31,7 @@ jobs:
           use-public-rspm: true
       - name: Install R packages
         run: |
-          Rscript -e 'install.packages(c("BiocManager", "SeuratObject", "jsonlite"), repos = "https://cloud.r-project.org")'
+          Rscript -e 'install.packages(c("BiocManager", "Seurat", "jsonlite"), repos = "https://cloud.r-project.org")'
           Rscript -e 'BiocManager::install(c("SingleCellExperiment", "HDF5Array"), ask = FALSE, update = FALSE)'
           Rscript -e 'install.packages("BPCells", repos = c("https://bnprks.r-universe.dev", "https://cloud.r-project.org"))' || true
       - uses: julia-actions/julia-buildpkg@v1

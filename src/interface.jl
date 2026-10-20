@@ -226,3 +226,10 @@ function pysource end
 Open an AnnData zarr store as a SCUBA source. Requires `using Zarr`.
 """
 function open_zarr end
+
+"""
+    to_pandas(df)
+
+Convert a SCUBA result `DataFrame` to a pandas DataFrame (cell IDs as index). Requires `using PythonCall`.
+"""
+function to_pandas end

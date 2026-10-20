@@ -1,0 +1,45 @@
+name: Bench smoke
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '23 6 * * 1'
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1'
+      - uses: julia-actions/cache@v2
+      - uses: conda-incubator/setup-miniconda@v3
+        with:
+          activate-environment: scuba-fixtures
+          environment-file: bench/environment.yml
+          auto-activate-base: false
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true
+      - run: Rscript -e 'install.packages(c("arrow","ggplot2","dplyr","tidyr","scales","jsonlite","RcppTOML","ps","digest"), repos="https://cloud.r-project.org")'
+      - name: Instantiate bench project
+        run: julia --project=bench -e 'using Pkg; Pkg.develop(path="."); Pkg.instantiate()'
+      - name: Smoke benchmark (10k, Julia + Python)
+        shell: bash -l {0}
+        run: |
+          cd bench
+          python -I tools/preflight.py --scale 10k --run-id smoke --no-env || true
+          python -I generate/make_dataset.py --scale 10k --data-dir "$RUNNER_TEMP/scuba-bench-data"
+          julia --project=. -t 1 julia/run.jl --scale 10k --run-id smoke --only jl_h5ad_csc,jl_h5ad_csr --config <(sed "s#~/scuba-bench-data#$RUNNER_TEMP/scuba-bench-data#" config/bench.toml)
+          python -I python/run.py --scale 10k --run-id smoke --only raw_anndata_py,raw_h5py_py --config <(sed "s#~/scuba-bench-data#$RUNNER_TEMP/scuba-bench-data#" config/bench.toml)
+          python -I tools/merge_results.py --run-id smoke
+          python - <<'PY'
+          import pandas as pd
+          df = pd.read_parquet("results/results.parquet")
+          bad = df[(df.status == "ok") & (df.checksum_ok == False)]
+          assert len(bad) == 0, bad.head()
+          print(df.groupby(["implementation"]).size())
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench-smoke-results
+          path: bench/results/raw/smoke

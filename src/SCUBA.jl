@@ -39,7 +39,7 @@ export fetch_data, fetch_feature, fetch_matrix, fetch_metadata, fetch_reduction,
        set_metadata!, update_object_metadata!, snapshot, resolve_vars, cell_column, cells, drop_cells
 # sources
 export AbstractSingleCellSource, MemoryAnnData, Modality, H5ADSource, open_h5ad, BPCellsMatrix, open_bpcells,
-       rsource, pysource, open_zarr
+       rsource, pysource, open_zarr, to_pandas
 # errors & warnings
 export SCUBAError, VarsNotFound, MetadataNotFound, LayerNotFound, ModalityNotFound, ReductionNotFound,
        NoDefaultReduction, InvalidDims, CellsNotFound, NonCategoricalVar, ReadOnlySource,

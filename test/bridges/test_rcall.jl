@@ -18,7 +18,7 @@ using RCall
         end
     end
 
-    if have("SeuratObject") && isfile(fixture_path("AML_Seurat.rda"))
+    if have("Seurat") && isfile(fixture_path("AML_Seurat.rda"))
         @testset "Seurat (in-memory v3 Assay)" begin
             rda = fixture_path("AML_Seurat.rda")
             reval("load($(repr(rda)))")
@@ -40,7 +40,7 @@ using RCall
         @warn "SeuratObject not installed in R; skipping Seurat bridge tests"
     end
 
-    if have("SeuratObject") && have("BPCells") && isfile(fixture_path("AML_BPCells.rda"))
+    if have("Seurat") && have("BPCells") && isfile(fixture_path("AML_BPCells.rda"))
         @testset "Seurat with BPCells layers (native fast path)" begin
             rda = fixture_path("AML_BPCells.rda")
             bpdir = fixture_path("AML_BPCells")
@@ -84,7 +84,7 @@ using RCall
 end
 
 @testset "RCall bridge: default_reduction falls back to pca by name" begin
-    if rcopy(Bool, rcall(:requireNamespace, "SeuratObject", quietly = true)) && isfile(fixture_path("AML_Seurat.rda"))
+    if rcopy(Bool, rcall(:requireNamespace, "Seurat", quietly = true)) && isfile(fixture_path("AML_Seurat.rda"))
         reval("load($(repr(fixture_path("AML_Seurat.rda")))); sobj <- AML_Seurat; sobj[['umap']] <- NULL")
         s = rsource(:sobj)
         @test SCUBA.reduction_keys(s) == ["PC"]

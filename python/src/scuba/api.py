@@ -80,27 +80,8 @@ def _cells(cells):
 
 
 def _to_pandas(df) -> pd.DataFrame:
-    cells, cols = _jl.glue().table_payload(df)
-    index = pd.Index([str(c) for c in cells], name="cell")
-    data: dict[str, Any] = {}
-    for col in cols:
-        name, kind = str(col[0]), str(col[1])
-        if kind == "categorical":
-            codes = np.asarray(col[2], dtype=np.int64)
-            cats = [str(c) for c in col[3]]
-            data[name] = pd.Categorical.from_codes(codes, categories=cats, ordered=bool(col[4]))
-        elif kind == "float":
-            data[name] = np.asarray(col[2], dtype=np.float64)
-        elif kind == "int":
-            vals = [None if v is None else int(v) for v in col[2]]
-            data[name] = pd.array(vals, dtype="Int64")
-        elif kind == "bool":
-            vals = [None if v is None else bool(v) for v in col[2]]
-            data[name] = pd.array(vals, dtype="boolean")
-        else:
-            data[name] = pd.array([None if v is None else str(v) for v in col[2]], dtype="object")
-    out = pd.DataFrame(data, index=index)
-    return out
+    """Julia DataFrame -> pandas, built on the Julia side (cell IDs as index, categoricals preserved)."""
+    return _jl.glue().to_pandas(df)
 
 
 def _to_list(v) -> list:

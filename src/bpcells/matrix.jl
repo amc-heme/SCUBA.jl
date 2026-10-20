@@ -167,7 +167,7 @@ end
     return Float64(chunk[(t & 127) + 1])
 end
 
-# Visit (other_index0, value) for every entry of compressed vector `comp` (1-based)
+# Visit (other_index0, value) for every entry of compressed vector `comp` (1-based); slow path
 function _foreach_entry(f, m::BPCellsMatrix, comp::Int)
     a = m.idxptr[comp]; b = m.idxptr[comp + 1]
     for t in a:(b - 1)
@@ -175,23 +175,57 @@ function _foreach_entry(f, m::BPCellsMatrix, comp::Int)
     end
 end
 
+# Fast scan: visit every entry of the compressed vectors `comps` (1-based ids, any order) as
+# visit(k, other0, value) where k is the position in `comps`. Vectors are processed in file order
+# and each packed chunk is decoded at most once per contiguous run, with no locking.
+function _scan(visit, m::BPCellsMatrix, comps::AbstractVector{Int})
+    # function barrier: the fields are unions, the kernel specialises on the concrete types
+    return _scan_kernel(visit, m.idxptr, comps, m.index, m.index_stream, m.val, m.val_stream)
+end
+
+@inline _idx_at(idx::Vector{UInt32}, ::Vector{UInt32}, tt) = Int(idx[tt + 1])
+@inline _idx_at(::Nothing, ibuf::Vector{UInt32}, tt) = Int(ibuf[(tt & 127) + 1])
+@inline _val_at(val::AbstractVector, ::Vector{UInt32}, tt) = Float64(val[tt + 1])
+@inline _val_at(::Nothing, vbuf::Vector{UInt32}, tt) = Float64(vbuf[(tt & 127) + 1])
+
+function _scan_kernel(visit, idxptr::Vector{Int}, comps::AbstractVector{Int}, idx, istream, val, vstream)
+    order = sortperm(comps)
+    ibuf = Vector{UInt32}(undef, 128); vbuf = Vector{UInt32}(undef, 128)
+    cur_i = -1; cur_v = -1
+    @inbounds for k in order
+        c = comps[k]
+        t = idxptr[c]; b = idxptr[c + 1]
+        while t < b
+            ch = t >> 7
+            stop = min(b, (ch + 1) << 7)
+            if idx === nothing && ch != cur_i
+                decode_chunk!(ibuf, istream, ch); cur_i = ch
+            end
+            if val === nothing && ch != cur_v
+                decode_chunk!(vbuf, vstream, ch); cur_v = ch
+            end
+            for tt in t:(stop - 1)
+                visit(k, _idx_at(idx, ibuf, tt), _val_at(val, vbuf, tt))
+            end
+            t = stop
+        end
+    end
+    return nothing
+end
+
 function pull(m::BPCellsMatrix, fidx::AbstractVector{Int}, cidx::AbstractVector{Int})
     out = zeros(Float64, length(cidx), length(fidx))
     if !m.transposed
         fpos = position_lookup(m.nrow, fidx)
-        for (i, c) in enumerate(cidx)
-            _foreach_entry(m, c) do f0, v
-                p = fpos[f0 + 1]
-                p == 0 || (out[i, p] = v)
-            end
+        _scan(m, collect(cidx)) do i, f0, v
+            p = fpos[f0 + 1]
+            p == 0 || (@inbounds out[i, p] = v)
         end
     else
         cpos = position_lookup(m.ncol, cidx)
-        for (j, f) in enumerate(fidx)
-            _foreach_entry(m, f) do c0, v
-                p = cpos[c0 + 1]
-                p == 0 || (out[p, j] = v)
-            end
+        _scan(m, collect(fidx)) do j, c0, v
+            p = cpos[c0 + 1]
+            p == 0 || (@inbounds out[p, j] = v)
         end
     end
     return out
@@ -201,19 +235,15 @@ function pull_sparse(m::BPCellsMatrix, fidx::AbstractVector{Int}, cidx::Abstract
     I = Int[]; J = Int[]; V = Float64[]
     if !m.transposed
         fpos = position_lookup(m.nrow, fidx)
-        for (i, c) in enumerate(cidx)
-            _foreach_entry(m, c) do f0, v
-                p = fpos[f0 + 1]
-                p == 0 || (push!(I, i); push!(J, p); push!(V, v))
-            end
+        _scan(m, collect(cidx)) do i, f0, v
+            p = fpos[f0 + 1]
+            p == 0 || (push!(I, i); push!(J, p); push!(V, v))
         end
     else
         cpos = position_lookup(m.ncol, cidx)
-        for (j, f) in enumerate(fidx)
-            _foreach_entry(m, f) do c0, v
-                p = cpos[c0 + 1]
-                p == 0 || (push!(I, p); push!(J, j); push!(V, v))
-            end
+        _scan(m, collect(fidx)) do j, c0, v
+            p = cpos[c0 + 1]
+            p == 0 || (push!(I, p); push!(J, j); push!(V, v))
         end
     end
     return sparse(I, J, V, length(cidx), length(fidx))

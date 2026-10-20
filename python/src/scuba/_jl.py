@@ -27,32 +27,12 @@ function call(f, args...; kwargs...)
     return result, [(string(w.code), w.message, w.vars) for w in ws]
 end
 
-# DataFrame -> (cells, columns::Vector{(name, kind, payload...)})
-function table_payload(df::DataFrame)
-    cc = SCUBA.cell_column(df)
-    cells = df[!, cc]
-    cols = Any[]
-    for n in names(df)
-        n == cc && continue
-        v = df[!, n]
-        if v isa CategoricalVector
-            lv = string.(levels(v))
-            codes = Int32[ismissing(x) ? -1 : Int32(levelcode(x) - 1) for x in v]
-            push!(cols, (n, "categorical", codes, lv, isordered(v)))
-        elseif nonmissingtype(eltype(v)) <: Bool
-            push!(cols, (n, "bool", Union{Missing,Bool}[x for x in v]))
-        elseif nonmissingtype(eltype(v)) <: Integer
-            push!(cols, (n, "int", Union{Missing,Int64}[x for x in v]))
-        elseif nonmissingtype(eltype(v)) <: Real
-            push!(cols, (n, "float", Float64[ismissing(x) ? NaN : Float64(x) for x in v]))
-        else
-            push!(cols, (n, "object", Union{Missing,String}[ismissing(x) ? missing : string(x) for x in v]))
-        end
-    end
-    return (String.(cells), cols)
-end
+to_pandas(df::DataFrame) = SCUBA.to_pandas(df)
 
 errkind(e) = string(nameof(typeof(e)))
+
+# Vector of strings -> Python list of str in one call (avoids per-element conversion from Python)
+pystrings(v) = pylist([ismissing(x) ? pybuiltins.None : pystr(string(x)) for x in v])
 end
 """
 

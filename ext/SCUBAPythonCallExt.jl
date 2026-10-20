@@ -187,24 +187,32 @@ end
 # -----------------------------------------------------------------------------
 # Julia DataFrame -> pandas (categoricals, missing and booleans preserved)
 
+# Numeric Julia vectors cross as juliacall array wrappers (buffer protocol); np.array copies them
+# into Python-owned memory in one C call. Strings go through pystr once per element.
+_nparray(v::AbstractVector{T}, dtype) where {T<:Union{Float64,Float32,Int64,Int32,UInt32,Bool}} = np.array(Py(v); dtype = dtype, copy = true)
+_pystrs(v) = pylist(ismissing(x) ? pybuiltins.None : pystr(string(x)) for x in v)
+
 function _pyseries(v::AbstractVector)
     if v isa CategoricalVector
         codes = Int32[ismissing(x) ? Int32(-1) : Int32(levelcode(x) - 1) for x in v]
-        cats = pylist(string.(levels(v)))
-        return pd.Categorical.from_codes(np.asarray(pylist(codes), dtype = np.int32); categories = cats, ordered = isordered(v))
+        return pd.Categorical.from_codes(_nparray(codes, np.int32); categories = _pystrs(levels(v)), ordered = isordered(v))
     end
     T = nonmissingtype(eltype(v))
-    hasmissing = any(ismissing, v)
+    hasmissing = eltype(v) >: Missing && any(ismissing, v)
     if T <: Bool
-        hasmissing || return np.asarray(pylist(Bool.(v)), dtype = np.bool_)
-        return pd.array(pylist([ismissing(x) ? pybuiltins.None : Bool(x) for x in v]); dtype = "boolean")
+        hasmissing || return _nparray(Vector{Bool}(v), np.bool_)
+        arr = pd.array(_nparray(Bool[ismissing(x) ? false : x for x in v], np.bool_); dtype = "boolean")
+        arr[_nparray(Bool[ismissing(x) for x in v], np.bool_)] = pd.NA
+        return arr
     elseif T <: Integer
-        hasmissing || return np.asarray(pylist(Int64.(v)), dtype = np.int64)
-        return pd.array(pylist([ismissing(x) ? pybuiltins.None : Int64(x) for x in v]); dtype = "Int64")
+        hasmissing || return _nparray(Vector{Int64}(v), np.int64)
+        arr = pd.array(_nparray(Int64[ismissing(x) ? 0 : Int64(x) for x in v], np.int64); dtype = "Int64")
+        arr[_nparray(Bool[ismissing(x) for x in v], np.bool_)] = pd.NA
+        return arr
     elseif T <: Real
-        return np.asarray(pylist(Float64[ismissing(x) ? NaN : Float64(x) for x in v]), dtype = np.float64)
+        return _nparray(v isa Vector{Float64} ? v : Float64[ismissing(x) ? NaN : Float64(x) for x in v], np.float64)
     else
-        return pd.array(pylist([ismissing(x) ? pybuiltins.None : string(x) for x in v]); dtype = "object")
+        return pd.array(_pystrs(v); dtype = "object")
     end
 end
 
@@ -213,7 +221,18 @@ function _to_pandas(df::DataFrame, cells::AbstractVector{<:AbstractString})
     for n in names(df)
         d[n] = _pyseries(df[!, n])
     end
-    return pd.DataFrame(d; index = pd.Index(pylist(String.(cells))))
+    return pd.DataFrame(d; index = pd.Index(_pystrs(cells); name = "cell"))
+end
+
+"""
+    SCUBA.to_pandas(df) -> pandas.DataFrame
+
+Convert a SCUBA result table to pandas: the cell column becomes the index, categoricals become
+`pd.Categorical`, `missing` becomes `NaN`/`pd.NA`.
+"""
+function SCUBA.to_pandas(df::DataFrame)
+    cc = SCUBA.cell_column(df)
+    return _to_pandas(select(df, Not(cc)), df[!, cc])
 end
 
 end # module

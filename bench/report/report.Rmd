@@ -1,0 +1,16 @@
+---
+title: "SCUBA benchmark report"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r summary, results='asis'}
+cat(readLines("summary.md"), sep = "\n")
+```
+
+```{r figures, results='asis'}
+for (f in list.files("figures", pattern = "png$", full.names = TRUE)) cat(sprintf("\n\n### %s\n\n![](%s)\n", tools::file_path_sans_ext(basename(f)), f))
+```
