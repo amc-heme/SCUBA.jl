@@ -21,6 +21,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--results-dir", default=os.path.join(BENCH, "results"))
     ap.add_argument("--run-id", default=None)
+    ap.add_argument("--keep-all-runs", action="store_true", help="do not drop superseded runs")
     args = ap.parse_args()
     pattern = os.path.join(args.results_dir, "raw", args.run_id or "*", "*.csv")
     files = sorted(glob.glob(pattern))
@@ -36,6 +37,19 @@ def main():
         df["source_file"] = os.path.relpath(f, args.results_dir)
         frames.append(df)
     all_df = pd.concat(frames, ignore_index=True)
+    # Several run ids may cover the same (implementation, scale, cache_state) after a partial rerun:
+    # keep only the most recent run for each such cell so the report never mixes old and new code.
+    if "run_id" in all_df and all_df["run_id"].nunique() > 1 and not args.keep_all_runs:
+        # concurrency streams (phase == "concurrent") are produced by a different driver than the
+        # single-process harness, so they supersede each other independently
+        all_df["_kind"] = (all_df["phase"] == "concurrent").map({True: "concurrent", False: "single"})
+        key = ["implementation", "scale", "cache_state", "_kind"]
+        latest = all_df.groupby(key + ["run_id"])["timestamp"].max().reset_index()
+        latest = latest.sort_values("timestamp").drop_duplicates(key, keep="last")[key + ["run_id"]]
+        before = len(all_df)
+        all_df = all_df.merge(latest, on=key + ["run_id"], how="inner")
+        print(f"kept the latest run per implementation/scale/cache: {before} -> {len(all_df)} rows")
+    all_df = all_df.drop(columns=["_kind"], errors="ignore")
     for c in NUMERIC:
         if c in all_df:
             all_df[c] = pd.to_numeric(all_df[c], errors="coerce")

@@ -327,4 +327,223 @@ function SCUBA.rsource(obj::RObject)
 end
 SCUBA.rsource(sym::Symbol) = SCUBA.rsource(reval(string(sym)))
 
+# ---------------------------------------------------------------------------
+# R-facing glue (see R/engine.R in the SCUBA R package)
+
+module ScubaR
+# JuliaCall entry points used by the R package (R/engine.R calls Main.ScubaR.<fn>). Living here
+# rather than in an R string means the glue is precompiled with the extension.
+using SCUBA, RCall, DataFrames, CategoricalArrays
+
+const S = SCUBA
+
+# Cache of wrapped sources keyed by the R object pointer. Holding the RObject keeps the SEXP
+# alive (RCall preserves it), so an address cannot be reused by a different object while cached.
+# R copies on modify, so a modified object arrives with a new address and gets a fresh source.
+const SRC_CACHE = Dict{Ptr{Cvoid}, Tuple{Any, Any}}()
+const SRC_CACHE_MAX = 4
+function getsrc(obj)
+    key = Ptr{Cvoid}(obj.p)
+    hit = get(SRC_CACHE, key, nothing)
+    hit === nothing || return hit[2]
+    if length(SRC_CACHE) >= SRC_CACHE_MAX
+        empty!(SRC_CACHE)
+    end
+    src = S.rsource(obj)
+    SRC_CACHE[key] = (obj, src)
+    return src
+end
+clear_cache() = (empty!(SRC_CACHE); nothing)
+
+function run(f, obj, args...; kwargs...)
+    src = getsrc(obj)
+    result, ws = S.with_collected_warnings(() -> f(src, args...; kwargs...))
+    return result, String[w.message for w in ws]
+end
+
+asvec(x::AbstractString) = String[x]
+asvec(x) = x
+
+# Hand a table to R column by column so factors, NA and types survive the JuliaCall conversion.
+function totable(df::DataFrame)
+    cc = S.cell_column(df)
+    names_ = String[n for n in names(df) if n != cc]
+    columns = Any[]
+    cat_idx = Int[]; cat_codes = Any[]; cat_levels = Any[]; cat_ordered = Bool[]
+    for (k, n) in enumerate(names_)
+        v = df[!, n]
+        if v isa CategoricalVector
+            push!(cat_idx, k)
+            push!(cat_codes, Int[ismissing(x) ? -1 : levelcode(x) for x in v])
+            push!(cat_levels, string.(levels(v)))
+            push!(cat_ordered, isordered(v))
+            push!(columns, Int[0])
+        else
+            push!(columns, v)
+        end
+    end
+    (names = names_, columns = columns, cat_idx = cat_idx, cat_codes = cat_codes, cat_levels = cat_levels,
+     cat_ordered = cat_ordered, cells = String.(S.cells(df)))
+end
+
+function fetch_data(obj, vars, layer, cells)
+    df, w = run(S.fetch_data, obj, asvec(vars); layer = layer, cells = cells)
+    (totable(df)..., warnings = w)
+end
+function fetch_feature(obj, features, layer, cells)
+    df, w = run(S.fetch_feature, obj, asvec(features); layer = layer, cells = cells)
+    (totable(df)..., warnings = w)
+end
+function fetch_metadata(obj, vars, cells, full_table)
+    df, w = if full_table
+        run(S.fetch_metadata, obj; cells = cells)
+    else
+        run(S.fetch_metadata, obj, asvec(vars); cells = cells)
+    end
+    (totable(df)..., warnings = w)
+end
+function fetch_reduction(obj, reduction, cells, dims)
+    df, w = run(S.fetch_reduction, obj, reduction; cells = cells, dims = dims)
+    (totable(df)..., warnings = w)
+end
+fetch_cells(obj, meta_var, meta_levels) = run(S.fetch_cells, obj, meta_var, asvec(meta_levels))
+get_all_cells(obj) = run(S.all_cells, obj)
+meta_varnames(obj) = run(S.meta_varnames, obj)
+function all_keys(obj)
+    # R SCUBA returns names = assay / reduction names and values = keys; mirror that for Seurat
+    src = getsrc(obj)
+    ks = S.all_keys(src)
+    names_ = collect(keys(ks)); vals = collect(values(ks))
+    if hasproperty(src, :assay_alias)
+        inv = Dict(v => k for (k, v) in src.assay_alias)
+        merge!(inv, Dict(v => k for (k, v) in src.red_alias))
+        names_ = [get(inv, k, k) for k in names_]
+    end
+    return names_, vals, String[]
+end
+features_in_assay(obj, assay) = run(S.features_in_modality, obj, assay)
+reduction_dimnames(obj, reduction, dims) = run(S.reduction_dimnames, obj, reduction, dims)
+default_layer(obj) = run(S.default_layer, obj)
+default_reduction(obj) = run(S.default_reduction, obj)
+function default_reduction_name(obj)
+    # R SCUBA returns the reduction *name* for Seurat ("umap"), the key for others
+    src = getsrc(obj)
+    key = S.default_reduction(src)
+    name = key
+    if hasproperty(src, :reductions) && haskey(src.reductions, key) && hasproperty(src.reductions[key], :name)
+        name = src.reductions[key].name
+    end
+    return name, String[]
+end
+unique_values(obj, var) = run(S.unique_values, obj, var)
+n_unique(obj, var) = run(S.n_unique, obj, var)
+end # module ScubaR
+
+# ---------------------------------------------------------------------------
+# Precompile workload. The extension's methods are only ever called on RObject inputs, so the
+# PrecompileTools workload in SCUBA proper cannot reach them; without this the first call from
+# R pays ~1.4 s of compilation. R is already running here (RCall initialised it when the
+# extension loaded), so a tiny Seurat object / SingleCellExperiment is built when the packages
+# are installed and every accessor is exercised once.
+using PrecompileTools: @setup_workload, @compile_workload
+
+# Module `__init__`s do not run while precompiling, so R has to be started here explicitly.
+_r_running() = try
+    unsafe_load(cglobal((:R_NilValue, RCall.libR), Ptr{Cvoid})) != C_NULL
+catch
+    false
+end
+
+function _precompile_workload()
+    _r_running() || RCall.__init__()
+    reval(R_HELPERS)   # normally installed by __init__, which also does not run here
+    has(pkg) = rcopy(Bool, reval("requireNamespace('$pkg', quietly = TRUE)"))
+    has("Matrix") || return nothing
+    reval("""
+    scuba_pc_counts <- Matrix::sparseMatrix(i = c(1, 2, 3, 1, 4, 2, 5), j = c(1, 1, 2, 3, 3, 4, 4), x = c(3, 1, 2, 5, 1, 4, 2),
+                                            dims = c(5, 4), dimnames = list(paste0("g", 1:5), paste0("c", 1:4)))
+    scuba_pc_meta <- data.frame(group = factor(c("a", "b", "a", "b")), score = c(0.5, 1.5, 2.5, 3.5), flag = c(TRUE, FALSE, TRUE, FALSE),
+                                row.names = paste0("c", 1:4), stringsAsFactors = FALSE)
+    scuba_pc_umap <- matrix(seq_len(8), 4, 2, dimnames = list(paste0("c", 1:4), c("UMAP_1", "UMAP_2")))
+    """)
+    objs = Any[]
+    if has("SeuratObject")
+        reval("""
+        scuba_pc_seurat <- SeuratObject::CreateSeuratObject(counts = scuba_pc_counts, meta.data = scuba_pc_meta)
+        scuba_pc_seurat <- SeuratObject::SetAssayData(scuba_pc_seurat, layer = "data", new.data = scuba_pc_counts)
+        scuba_pc_seurat[["umap"]] <- SeuratObject::CreateDimReducObject(embeddings = scuba_pc_umap, key = "UMAP_", assay = "RNA")
+        """)
+        push!(objs, (reval("scuba_pc_seurat"), "rna_g1", "umap"))
+        if has("BPCells")
+            # cellDIVER-style objects: BPCells matrices on disk, in both storage orders
+            reval("""
+            scuba_pc_tmp <- tempfile("scuba_pc_bp")
+            scuba_pc_bp_col <- BPCells::write_matrix_dir(methods::as(scuba_pc_counts, "IterableMatrix"), file.path(scuba_pc_tmp, "col"))
+            scuba_pc_bp_row <- BPCells::transpose_storage_order(scuba_pc_bp_col, outdir = file.path(scuba_pc_tmp, "row"), tmpdir = scuba_pc_tmp)
+            scuba_pc_seurat_bp <- SeuratObject::CreateSeuratObject(counts = scuba_pc_bp_row, meta.data = scuba_pc_meta)
+            scuba_pc_seurat_bp[["RNA"]]\$data <- scuba_pc_bp_col
+            scuba_pc_seurat_bp[["umap"]] <- SeuratObject::CreateDimReducObject(embeddings = scuba_pc_umap, key = "UMAP_", assay = "RNA")
+            """)
+            push!(objs, (reval("scuba_pc_seurat_bp"), "rna_g1", "umap"))
+        end
+    end
+    if has("SingleCellExperiment")
+        reval("""
+        scuba_pc_sce <- SingleCellExperiment::SingleCellExperiment(assays = list(counts = scuba_pc_counts, logcounts = scuba_pc_counts),
+                                                                   colData = scuba_pc_meta)
+        SingleCellExperiment::reducedDim(scuba_pc_sce, "UMAP") <- scuba_pc_umap
+        SingleCellExperiment::mainExpName(scuba_pc_sce) <- "RNA"
+        """)
+        push!(objs, (reval("scuba_pc_sce"), "RNA_g1", "UMAP"))
+    end
+    for (obj, feat, red) in objs
+        src = SCUBA.rsource(obj)
+        SCUBA.get_all_cells(src)
+        SCUBA.meta_varnames(src)
+        SCUBA.all_keys(src)
+        SCUBA.features_in_assay(src)
+        SCUBA.default_layer(src); SCUBA.default_reduction(src)
+        SCUBA.fetch_metadata(src)
+        SCUBA.fetch_metadata(src, ["group", "score"]; cells = ["c2", "c1"])
+        SCUBA.fetch_metadata(src, "flag")
+        SCUBA.unique_values(src, "group"); SCUBA.n_unique(src, "group")
+        SCUBA.fetch_cells(src, "group", ["a"])
+        SCUBA.fetch_reduction(src, red; dims = [1, 2])
+        SCUBA.fetch_reduction(src, red; dims = [1, 2], cells = ["c3", "c1"])
+        SCUBA.reduction_dimnames(src, red, [1, 2])
+        SCUBA.fetch_data(src, [feat])
+        SCUBA.fetch_data(src, [feat, "group", "UMAP_1"]; cells = ["c4", "c2"])
+        SCUBA.fetch_data(src, [feat]; layer = "counts")
+        SCUBA.fetch_data(src, [feat]; eltype = Float32)
+        SCUBA.fetch_feature(src, ["g1", "g2"])
+        SCUBA.fetch_matrix(src, ["g1", "g2"]; sparse = true)
+        SCUBA.with_collected_warnings(() -> SCUBA.fetch_data(src, [feat, "nope"]))
+        # the R package's entry points (objects arrive from JuliaCall exactly as from reval)
+        ScubaR.fetch_data(obj, [feat, "group"], nothing, nothing)
+        ScubaR.fetch_data(obj, feat, "counts", ["c2", "c1"])
+        ScubaR.fetch_feature(obj, ["g1", "g2"], nothing, nothing)
+        ScubaR.fetch_metadata(obj, nothing, nothing, true)
+        ScubaR.fetch_metadata(obj, ["group", "score", "flag"], ["c1", "c3"], false)
+        ScubaR.fetch_reduction(obj, red, nothing, [1, 2])
+        ScubaR.fetch_cells(obj, "group", "a")
+        ScubaR.get_all_cells(obj); ScubaR.meta_varnames(obj); ScubaR.all_keys(obj)
+        ScubaR.features_in_assay(obj, nothing); ScubaR.reduction_dimnames(obj, red, [1, 2])
+        ScubaR.default_layer(obj); ScubaR.default_reduction(obj); ScubaR.default_reduction_name(obj)
+        ScubaR.unique_values(obj, "group"); ScubaR.n_unique(obj, "group")
+        ScubaR.clear_cache()
+    end
+    reval("if (exists('scuba_pc_tmp')) unlink(scuba_pc_tmp, recursive = TRUE); rm(list = ls(pattern = '^scuba_pc_'))")
+    return nothing
+end
+
+@setup_workload begin
+    @compile_workload begin
+        try
+            _precompile_workload()
+        catch err
+            @warn "SCUBARCallExt precompile workload skipped" exception = (err, catch_backtrace())
+        end
+    end
+end
+
 end # module
