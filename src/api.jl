@@ -4,6 +4,9 @@
 const MAX_DENSE_BYTES = Ref{Int}(2^30)
 """`:warn` (default) or `:error`: what `fetch_data` does when the dense result exceeds `MAX_DENSE_BYTES[]`."""
 const DENSE_LIMIT_MODE = Ref{Symbol}(:warn)
+"""Results below this many bytes are gathered into one dense block and split into columns (fastest);
+above it, columns are filled directly so no second copy of a large result is ever held."""
+const COLUMN_PATH_BYTES = Ref{Int}(256 * 2^20)
 
 """Thrown when `DENSE_LIMIT_MODE[] == :error` and a request exceeds `MAX_DENSE_BYTES[]`."""
 struct ResultTooLarge <: SCUBAError
@@ -102,9 +105,16 @@ function fetch_data(src::AbstractSingleCellSource, vars::AbstractVector{<:Abstra
 
     for ((mod, lay), ps) in expr_groups
         fidx = [found[p].index for p in ps]
-        cols = expression_columns(src, mod, lay, fidx, cell_idx, eltype)
-        length(cols) == length(fidx) && all(c -> length(c) == length(cell_idx), cols) ||
-            error("backend $(source_name(src)) returned $(length(cols)) columns for $(length(fidx)) features × $(length(cell_idx)) cells")
+        if sizeof(eltype) * length(fidx) * length(cell_idx) <= COLUMN_PATH_BYTES[]
+            M = expression(src, mod, lay, fidx, cell_idx)
+            size(M) == (length(cell_idx), length(fidx)) ||
+                error("backend $(source_name(src)) returned a $(size(M)) block for $(length(cell_idx)) cells × $(length(fidx)) features")
+            cols = Vector{eltype}[Vector{eltype}(view(M, :, j)) for j in 1:size(M, 2)]
+        else
+            cols = expression_columns(src, mod, lay, fidx, cell_idx, eltype)
+            length(cols) == length(fidx) && all(c -> length(c) == length(cell_idx), cols) ||
+                error("backend $(source_name(src)) returned $(length(cols)) columns for $(length(fidx)) features × $(length(cell_idx)) cells")
+        end
         for (j, p) in enumerate(ps)
             columns[p] = cols[j]
         end

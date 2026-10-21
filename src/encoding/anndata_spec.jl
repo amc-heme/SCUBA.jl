@@ -181,13 +181,7 @@ function read_sparse_block!(out, store::AbstractStore, ref::MatrixRef, indptr::V
         _foreach_block(indptr, runs) do a, b, members
             ind = store_read(store, idx_path, a:b)
             val = store_read(store, data_path, a:b)
-            for f in members
-                j = colpos[f]
-                @inbounds for t in (indptr[f] + 1):indptr[f + 1]
-                    p = pos[ind[t - a + 1] + 1]
-                    p == 0 || _put!(out, p, j, val[t - a + 1])
-                end
-            end
+            _scatter_compressed!(out, ind, val, indptr, members, colpos, pos, a, true)
         end
     else
         # csr: compressed axis = cells (rows); indices are feature (column) ids
@@ -197,13 +191,26 @@ function read_sparse_block!(out, store::AbstractStore, ref::MatrixRef, indptr::V
         _foreach_block(indptr, runs) do a, b, members
             ind = store_read(store, idx_path, a:b)
             val = store_read(store, data_path, a:b)
-            for c in members
-                i = rowpos[c]
-                @inbounds for t in (indptr[c] + 1):indptr[c + 1]
-                    p = fpos[ind[t - a + 1] + 1]
-                    p == 0 || _put!(out, i, p, val[t - a + 1])
-                end
-            end
+            _scatter_compressed!(out, ind, val, indptr, members, rowpos, fpos, a, false)
+        end
+    end
+    return out
+end
+
+# Function barrier: `store_read` returns vectors whose element types the compiler cannot know at
+# the call site, so the scatter runs here with concrete `ind`/`val` types (otherwise every element
+# access boxes and dispatches dynamically: ~7 allocations per nonzero at 1M cells).
+# `major_is_feature`: csc (members are features, indices are cells) vs csr (members are cells).
+function _scatter_compressed!(out, ind::AbstractVector, val::AbstractVector, indptr::Vector{Int},
+                              members, major_pos::Vector{Int}, minor_pos::Vector{Int}, a::Int,
+                              major_is_feature::Bool)
+    @inbounds for m in members
+        q = major_pos[m]
+        for t in (indptr[m] + 1):indptr[m + 1]
+            p = minor_pos[ind[t - a + 1] + 1]
+            p == 0 && continue
+            v = val[t - a + 1]
+            major_is_feature ? _put!(out, p, q, v) : _put!(out, q, p, v)
         end
     end
     return out
@@ -219,23 +226,38 @@ function read_sparse_block_sparse(store::AbstractStore, ref::MatrixRef, indptr::
         colpos = position_lookup(ref.n_var, feature_idx)
         _foreach_block(indptr, consecutive_runs(sort(feature_idx))) do a, b, members
             ind = store_read(store, idx_path, a:b); val = store_read(store, data_path, a:b)
-            for f in members, t in (indptr[f] + 1):indptr[f + 1]
-                p = pos[ind[t - a + 1] + 1]
-                p == 0 || (push!(I, p); push!(J, colpos[f]); push!(V, val[t - a + 1]))
-            end
+            _collect_compressed!(I, J, V, ind, val, indptr, members, colpos, pos, a, true)
         end
     else
         fpos = position_lookup(ref.n_var, feature_idx)
         rowpos = position_lookup(ref.n_obs, cell_idx)
         _foreach_block(indptr, consecutive_runs(sort(cell_idx))) do a, b, members
             ind = store_read(store, idx_path, a:b); val = store_read(store, data_path, a:b)
-            for c in members, t in (indptr[c] + 1):indptr[c + 1]
-                p = fpos[ind[t - a + 1] + 1]
-                p == 0 || (push!(I, rowpos[c]); push!(J, p); push!(V, val[t - a + 1]))
-            end
+            _collect_compressed!(I, J, V, ind, val, indptr, members, rowpos, fpos, a, false)
         end
     end
     return sparse(I, J, V, length(cell_idx), length(feature_idx))
+end
+
+# COO counterpart of `_scatter_compressed!` (same function-barrier rationale).
+function _collect_compressed!(I::Vector{Int}, J::Vector{Int}, V::Vector{Float64},
+                              ind::AbstractVector, val::AbstractVector, indptr::Vector{Int},
+                              members, major_pos::Vector{Int}, minor_pos::Vector{Int}, a::Int,
+                              major_is_feature::Bool)
+    @inbounds for m in members
+        q = major_pos[m]
+        for t in (indptr[m] + 1):indptr[m + 1]
+            p = minor_pos[ind[t - a + 1] + 1]
+            p == 0 && continue
+            if major_is_feature
+                push!(I, p); push!(J, q)
+            else
+                push!(I, q); push!(J, p)
+            end
+            push!(V, Float64(val[t - a + 1]))
+        end
+    end
+    return nothing
 end
 
 """Dense block from a dense matrix element stored python-shape (n_obs, n_var)."""
@@ -248,12 +270,24 @@ function read_dense_block!(out, store::AbstractStore, ref::MatrixRef,
     for run in consecutive_runs(sort(feature_idx))
         # Julia dims are (n_var, n_obs): rows = features
         block = store_read(store, ref.path, run, :)           # length(run) × n_obs
-        for (r, f) in enumerate(run)
-            j = colpos[f]
-            @inbounds for (i, c) in enumerate(cell_idx)
-                _put!(out, i, j, block[r, c])
-            end
+        _scatter_dense!(out, block, run, colpos, cell_idx)
+    end
+    return out
+end
+
+# Function barriers for the dense readers (see `_scatter_compressed!`).
+function _scatter_dense!(out, block::AbstractMatrix, run::UnitRange{Int}, colpos::Vector{Int}, cell_idx::AbstractVector{Int})
+    @inbounds for (r, f) in enumerate(run)
+        j = colpos[f]
+        for (i, c) in enumerate(cell_idx)
+            _put!(out, i, j, block[r, c])
         end
+    end
+    return out
+end
+function _scatter_column!(out, col::AbstractVector, j::Int, cell_idx::AbstractVector{Int})
+    @inbounds for (i, c) in enumerate(cell_idx)
+        _put!(out, i, j, col[c])
     end
     return out
 end
@@ -266,9 +300,7 @@ function read_dataframe_block!(out, store::AbstractStore, ref::MatrixRef,
                                cell_idx::AbstractVector{Int}, feature_idx::AbstractVector{Int})
     for (j, f) in enumerate(feature_idx)
         col = read_element(store, ref.path * "/" * ref.columns[f])
-        @inbounds for (i, c) in enumerate(cell_idx)
-            _put!(out, i, j, col[c])
-        end
+        _scatter_column!(out, col, j, cell_idx)
     end
     return out
 end

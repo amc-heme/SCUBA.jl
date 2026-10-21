@@ -4,7 +4,9 @@ DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
 OrderedCollections = "bac558e1-5e72-5ebc-8fee-abe8a469f55d"
 PackageCompiler = "9b87118b-4619-50d2-8e1e-99f35a4d4d9d"
 PythonCall = "6099a3de-0909-46bc-b1f4-468b9a2dfc0d"
+RCall = "6f49c342-dc21-5d91-9882-a32aef131414"
 SCUBA = "7f663172-f634-479e-81eb-23756a6959e3"
+SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
 Zarr = "0a941bbe-ad1d-11e8-39d9-ab76183a1d99"
 
 [sources]

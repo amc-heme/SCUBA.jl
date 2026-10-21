@@ -265,11 +265,13 @@ function _to_pandas(df::DataFrame, cells::AbstractVector{<:AbstractString})
     if length(cols) >= 2 && all(n -> df[!, n] isa Vector{<:Union{Float32,Float64}}, cols)
         T = eltype(df[!, cols[1]])
         if all(n -> eltype(df[!, n]) == T, cols)
+            # One copy into a block we own, then numpy wraps it zero-copy (the juliacall array wrapper
+            # keeps the Julia memory alive for as long as the pandas frame references it).
             M = Matrix{T}(undef, nrow(df), length(cols))
             for (j, n) in enumerate(cols)
                 copyto!(view(M, :, j), df[!, n])
             end
-            arr = np.array(Py(M); dtype = T == Float32 ? np.float32 : np.float64, copy = true)   # (cells, features), Fortran order
+            arr = np.asarray(Py(M))   # shape (cells, features), Fortran order == pandas' internal block layout
             return pd.DataFrame(arr; columns = pylist(cols), index = index, copy = false)
         end
     end
