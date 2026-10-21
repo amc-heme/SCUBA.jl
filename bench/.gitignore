@@ -3,7 +3,5 @@ results/raw/
 results/*.parquet
 results/*.csv
 results/env/
-report/figures/
 report/*.html
-report/summary.md
 Manifest.toml

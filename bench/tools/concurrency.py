@@ -34,11 +34,18 @@ def worker_cmd(lang, cfg, common, engine):
             os.path.join(BENCH, "python", "worker.py"), *common]
 
 
+def worker_glob(a, n):
+    """Exact per-configuration worker file pattern (implementation names can be prefixes of each other)."""
+    if a.lang == "r":
+        return f"r_conc_{a.impl}_{a.engine}_{a.scale}_{a.mode}_n{n}_w*.csv"
+    if a.mode == "threads":
+        return f"{a.lang}_conc_{a.impl}_{a.scale}_threads_n{n}_{a.share}.csv"
+    return f"{a.lang}_conc_{a.impl}_{a.scale}_process_n{n}_w*.csv"
+
+
 def summarize(run_dir, pattern, n, lang, impl, mode, share, duration, out_rows, engine="r", scale=""):
     rows = []
     for f in glob.glob(os.path.join(run_dir, pattern)):
-        if lang == "r" and f"_{impl}_{engine}_" not in os.path.basename(f):
-            continue
         with open(f) as fh:
             rows += [r for r in csv.DictReader(fh) if r["phase"] == "concurrent"]
     if not rows:
@@ -79,12 +86,11 @@ def main():
     out_rows = []
     for n in ns:
         if a.summarize_only:
-            summarize(run_dir, f"{a.lang}_conc_{a.impl}_*{a.scale}_{a.mode}_n{n}_*.csv", n, a.lang, a.impl, a.mode,
+            summarize(run_dir, worker_glob(a, n), n, a.lang, a.impl, a.mode,
                       a.share if a.mode == "threads" else "process", conc["duration_s"], out_rows, engine=a.engine, scale=a.scale)
             continue
         # remove stale worker files for this configuration
-        stale = f"{a.lang}_conc_{a.impl}_{a.engine}_{a.scale}_{a.mode}_n{n}_*.csv" if a.lang == "r" else f"{a.lang}_conc_{a.impl}_{a.scale}_{a.mode}_n{n}_*.csv"
-        for f in glob.glob(os.path.join(run_dir, stale)):
+        for f in glob.glob(os.path.join(run_dir, worker_glob(a, n))):
             os.remove(f)
         go = os.path.join(tempfile.mkdtemp(prefix="scuba-go-"), "go")
         common = ["--scale", a.scale, "--impl", a.impl, "--duration", str(conc["duration_s"]), "--warmup", str(conc["warmup_s"]),
@@ -103,7 +109,7 @@ def main():
         for p in procs:
             p.wait()
         print(f"[conc] n={n} done in {time.time() - t0:.0f}s", flush=True)
-        summarize(run_dir, f"{a.lang}_conc_{a.impl}_*{a.scale}_{a.mode}_n{n}_*.csv", n, a.lang, a.impl, a.mode, a.share if a.mode == "threads" else "process",
+        summarize(run_dir, worker_glob(a, n), n, a.lang, a.impl, a.mode, a.share if a.mode == "threads" else "process",
                   conc["duration_s"], out_rows, engine=a.engine, scale=a.scale)
     path = os.path.join(run_dir, "concurrency_summary.csv")
     exists = os.path.exists(path)

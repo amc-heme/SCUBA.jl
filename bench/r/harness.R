@@ -183,7 +183,7 @@ parse_single <- function(spec) {
   p <- strsplit(spec, "|", fixed = TRUE)[[1]]
   kind <- p[1]
   if (kind %in% c("feature", "matrix_sparse")) list(workload = kind, layer = p[2], gene_set = p[3], n_features = as.integer(sub(":.*", "", p[3])), cell_subset = p[4], extra = "")
-  else if (kind %in% c("metadata", "reduction")) list(workload = kind, layer = "", gene_set = "", n_features = 0L, cell_subset = "all", extra = p[2])
+  else if (kind %in% c("metadata", "reduction")) list(workload = kind, layer = "", gene_set = "", n_features = 0L, cell_subset = "all", extra = paste(p[-1], collapse = "|"))
   else list(workload = kind, layer = "", gene_set = "", n_features = 0L, cell_subset = "", extra = p[2])
 }
 work_label <- function(w) if (w$workload %in% c("feature", "matrix_sparse")) w$workload else paste0(w$workload, ":", w$extra)

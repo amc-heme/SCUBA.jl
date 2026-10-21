@@ -86,7 +86,7 @@ function parse_single(spec)
     elseif kind == "metadata"
         return Work("metadata", "", "", 0, "all", p[2])
     elseif kind == "reduction"
-        return Work("reduction", "", "", 0, "all", p[2])
+        return Work("reduction", "", "", 0, "all", join(p[2:end], "|"))
     else
         return Work(kind, "", "", 0, "", p[2])
     end

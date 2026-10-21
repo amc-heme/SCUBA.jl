@@ -281,7 +281,7 @@ def parse_single(spec):
     if p[0] in ("feature", "matrix_sparse"):
         return dict(workload=p[0], layer=p[1], gene_set=p[2], n_features=int(p[2].split(":")[0]), cell_subset=p[3], extra="")
     if p[0] in ("metadata", "reduction"):
-        return dict(workload=p[0], layer="", gene_set="", n_features=0, cell_subset="all", extra=p[1])
+        return dict(workload=p[0], layer="", gene_set="", n_features=0, cell_subset="all", extra="|".join(p[1:]))
     return dict(workload=p[0], layer="", gene_set="", n_features=0, cell_subset="", extra=p[1])
 
 

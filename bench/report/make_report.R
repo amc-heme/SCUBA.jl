@@ -105,7 +105,11 @@ if (nrow(mem)) {
 ## 6. Concurrency --------------------------------------------------------------------------------------------
 conc_files <- list.files(file.path(bench, "results", "raw"), pattern = "concurrency_summary.csv", recursive = TRUE, full.names = TRUE)
 if (length(conc_files)) {
-  cs <- bind_rows(lapply(conc_files, function(f) { d <- read.csv(f); if (!"scale" %in% names(d)) d$scale <- "unknown"; if (!"engine" %in% names(d)) d$engine <- "native"; d })) %>%
+  cs <- bind_rows(lapply(conc_files, function(f) {
+      d <- read.csv(f, colClasses = "character")
+      if (!"scale" %in% names(d)) d$scale <- "unknown"; if (!"engine" %in% names(d)) d$engine <- "native"
+      for (col in c("n", "queries", "duration_s", "throughput_qps", "p50_ms", "p95_ms", "p99_ms")) d[[col]] <- as.numeric(d[[col]])
+      d })) %>%
     filter(workload == "all") %>%
     mutate(impl = paste0(implementation, ifelse(language == "r", paste0(" [", engine, "]"), ""), ifelse(mode == "threads", paste0(" threads/", share), "")),
            lang = factor(c(julia = "Julia (SCUBA.jl)", r = "R (SCUBA)", python = "Python")[language], levels = c("Julia (SCUBA.jl)", "R (SCUBA)", "Python")))
