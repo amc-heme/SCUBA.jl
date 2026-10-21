@@ -18,7 +18,8 @@ import time
 import tomllib
 
 BENCH = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-STORAGE = {"jl_h5ad_csc": "h5ad_csc", "jl_h5ad_csr": "h5ad_csr", "jl_bpcells": "bpcells", "r_seurat_bpcells": "seurat",
+STORAGE = {"jl_h5ad_csc": "h5ad_csc", "jl_h5ad_csr": "h5ad_csr", "jl_bpcells": "bpcells", "jl_bpcells_rowmajor": "bpcells",
+           "r_seurat_bpcells": "seurat", "r_seurat_bpcells_rowmajor": "seurat", "raw_bpcells_r_rowmajor": "bpcells",
            "r_sce_backed": "sce", "raw_bpcells_r": "bpcells", "raw_anndata_py": "h5ad_csc", "raw_h5py_py": "h5ad_csc",
            "py_scuba_sc": "h5ad_csc"}
 DEFAULT_WORKLOADS = ["feature|data|1:0|all", "feature|data|10:0|all", "feature|data|100:0|all", "feature|data|10:0|rand10",

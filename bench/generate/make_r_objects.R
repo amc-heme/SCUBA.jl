@@ -47,12 +47,23 @@ if (force || !file.exists(file.path(counts_dir, "version"))) {
 mcounts <- open_matrix_dir(counts_dir); mdata <- open_matrix_dir(data_dir)
 genes <- rownames(mcounts)
 stopifnot(identical(colnames(mcounts), cells), length(genes) == manifest$genes)
+## 1b. Row-major (gene-compressed) BPCells directories: the layout cellDIVER objects use ------------
+rowmajor_dirs <- list()
 if (isTRUE(cfg$generation$bpcells_gene_major)) {
-  gm <- file.path(bp_dir, "RNA_data_genemajor")
-  if (force || !file.exists(file.path(gm, "version"))) {
-    write_matrix_dir(transpose_storage_order(mdata), gm, compress = TRUE, overwrite = TRUE)
-    log("wrote gene-major BPCells dir")
+  for (layer in c("counts", "data")) {
+    gm <- file.path(bp_dir, paste0("RNA_", layer, "_rowmajor"))
+    src_mat <- if (layer == "counts") mcounts else mdata
+    if (force || !file.exists(file.path(gm, "version"))) {
+      t0 <- Sys.time()
+      if (dir.exists(gm)) unlink(gm, recursive = TRUE)
+      # transpose_storage_order() re-sorts entries so each gene's cells are contiguous; writes to outdir
+      m <- transpose_storage_order(src_mat, outdir = gm, tmpdir = file.path(d, "tmp_transpose"))
+      log("wrote row-major BPCells dir ", basename(gm), " in ", round(as.numeric(Sys.time() - t0, units = "secs"), 1), "s; storage_order = ",
+          readLines(file.path(gm, "storage_order")), ", version = ", readLines(file.path(gm, "version")))
+    }
+    rowmajor_dirs[[layer]] <- gm
   }
+  unlink(file.path(d, "tmp_transpose"), recursive = TRUE)
 }
 
 ## 2. Seurat v5 object with BPCells layers -----------------------------------------------------
@@ -71,6 +82,22 @@ if (force || !file.exists(seurat_path)) {
   log("wrote seurat_bpcells.rds in ", round(timings$seurat_s, 1), "s")
   rm(obj)
 } else log("seurat_bpcells.rds exists, skipping")
+
+## 2b. Seurat v5 object on the row-major directories -----------------------------------------------
+seurat_rm_path <- file.path(d, "seurat_bpcells_rowmajor.rds")
+if (length(rowmajor_dirs) == 2 && (force || !file.exists(seurat_rm_path))) {
+  suppressPackageStartupMessages(library(SeuratObject))
+  t0 <- Sys.time()
+  obj <- CreateSeuratObject(counts = open_matrix_dir(rowmajor_dirs$counts), meta.data = obs, assay = "RNA", min.cells = 0, min.features = 0)
+  obj[["RNA"]]$data <- open_matrix_dir(rowmajor_dirs$data)
+  u <- umap; colnames(u) <- c("UMAP_1", "UMAP_2")
+  obj[["umap"]] <- CreateDimReducObject(embeddings = u, key = "UMAP_", assay = "RNA")
+  p <- pca; colnames(p) <- paste0("PC_", seq_len(ncol(p)))
+  obj[["pca"]] <- CreateDimReducObject(embeddings = p, key = "PC_", assay = "RNA")
+  saveRDS(obj, seurat_rm_path)
+  log("wrote seurat_bpcells_rowmajor.rds in ", round(as.numeric(Sys.time() - t0, units = "secs"), 1), "s")
+  rm(obj)
+}
 
 ## 3. SingleCellExperiment over HDF5-backed sparse assays --------------------------------------
 sce_path <- file.path(d, "sce_h5sparse.rds")
@@ -101,7 +128,8 @@ manifest$r_objects <- list(
   bpcells = list(counts = normalizePath(counts_dir), data = normalizePath(data_dir),
                  storage_order = readLines(file.path(counts_dir, "storage_order")),
                  version_counts = readLines(file.path(counts_dir, "version")), version_data = readLines(file.path(data_dir, "version"))),
-  seurat = seurat_path, sce = sce_path, timings_s = timings,
+  bpcells_rowmajor = if (length(rowmajor_dirs)) lapply(rowmajor_dirs, normalizePath) else NULL,
+  seurat = seurat_path, seurat_rowmajor = if (file.exists(seurat_rm_path)) seurat_rm_path else NULL, sce = sce_path, timings_s = timings,
   R = R.version.string, BPCells = as.character(packageVersion("BPCells")),
   SeuratObject = as.character(packageVersion("SeuratObject")), HDF5Array = as.character(packageVersion("HDF5Array")),
   created = format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ", tz = "UTC"))

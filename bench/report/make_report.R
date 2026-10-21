@@ -20,11 +20,12 @@ x_cells <- scale_x_log10(breaks = c(1e4, 1e5, 1e6, 3e6), labels = c("10k", "100k
 # Fixed implementation -> colour slot assignment (reference palette, categorical slots in fixed order per language)
 LANG_LABEL <- c(julia = "Julia (SCUBA.jl)", r = "R (SCUBA)", python = "Python")
 PAL <- c("#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948")
-impl_levels <- c("jl_h5ad_csc", "jl_h5ad_csr", "jl_bpcells", "jl_snapshot",
-                 "r_seurat_bpcells [r]", "r_sce_backed [r]", "r_anndata_backed [r]", "raw_bpcells_r [r]", "r_seurat_inmem [r]", "raw_seurat_fetchdata [r]",
-                 "r_seurat_bpcells [julia]", "r_sce_backed [julia]",
+impl_levels <- c("jl_h5ad_csc", "jl_h5ad_csr", "jl_bpcells", "jl_bpcells_rowmajor", "jl_snapshot",
+                 "r_seurat_bpcells [r]", "r_seurat_bpcells_rowmajor [r]", "r_sce_backed [r]", "raw_bpcells_r [r]", "raw_bpcells_r_rowmajor [r]",
+                 "r_seurat_bpcells [julia]", "r_seurat_bpcells_rowmajor [julia]", "r_sce_backed [julia]",
+                 "r_anndata_backed [r]", "r_seurat_inmem [r]", "raw_seurat_fetchdata [r]",
                  "raw_anndata_py", "raw_h5py_py", "py_scuba_sc")
-slot <- c(1, 2, 3, 4,  1, 2, 3, 4, 5, 6,  7, 8,  1, 2, 3)
+slot <- c(1, 2, 3, 4, 5,  1, 2, 3, 4, 5,  6, 7, 8,  1, 2, 3,  1, 2, 3)
 impl_cols <- setNames(PAL[slot], impl_levels)
 present <- intersect(impl_levels, unique(ok$impl)); extra <- setdiff(unique(ok$impl), impl_levels)
 ok$impl <- factor(ok$impl, levels = c(present, extra))
@@ -104,12 +105,18 @@ if (nrow(mem)) {
 ## 6. Concurrency --------------------------------------------------------------------------------------------
 conc_files <- list.files(file.path(bench, "results", "raw"), pattern = "concurrency_summary.csv", recursive = TRUE, full.names = TRUE)
 if (length(conc_files)) {
-  cs <- bind_rows(lapply(conc_files, read.csv)) %>% filter(workload == "all") %>% mutate(impl = paste0(implementation, " [", mode, "]"))
+  cs <- bind_rows(lapply(conc_files, function(f) { d <- read.csv(f); if (!"scale" %in% names(d)) d$scale <- "unknown"; if (!"engine" %in% names(d)) d$engine <- "native"; d })) %>%
+    filter(workload == "all") %>%
+    mutate(impl = paste0(implementation, ifelse(language == "r", paste0(" [", engine, "]"), ""), ifelse(mode == "threads", paste0(" threads/", share), "")),
+           lang = factor(c(julia = "Julia (SCUBA.jl)", r = "R (SCUBA)", python = "Python")[language], levels = c("Julia (SCUBA.jl)", "R (SCUBA)", "Python")))
+  conc_cols <- setNames(PAL[((seq_along(unique(cs$impl)) - 1) %% 8) + 1], unique(cs$impl))
   p1 <- ggplot(cs, aes(n, throughput_qps, colour = impl, group = impl)) + geom_line(linewidth = 0.7) + geom_point(size = 2.2) +
-    scale_x_continuous(breaks = unique(cs$n)) + labs(title = "Throughput vs concurrent sessions", x = "concurrent sessions", y = "queries / s") + theme_bench() + scale_colour_manual(values = setNames(PAL[seq_along(unique(cs$impl))], unique(cs$impl)), name = NULL)
-  p2 <- ggplot(cs, aes(n, p95_ms, colour = impl, group = impl)) + geom_line(linewidth = 0.7) + geom_point(size = 2.2) + scale_y_log10() +
-    scale_x_continuous(breaks = unique(cs$n)) + labs(title = "p95 latency vs concurrent sessions", x = "concurrent sessions", y = "p95 wall time (ms, log)") + theme_bench() + scale_colour_manual(values = setNames(PAL[seq_along(unique(cs$impl))], unique(cs$impl)), name = NULL)
-  save(p1, "concurrency_throughput", 9, 5); save(p2, "concurrency_p95", 9, 5)
+    facet_grid(scale ~ lang, scales = "free_y") + scale_y_log10(labels = scales::label_comma()) +
+    scale_x_continuous(breaks = unique(cs$n)) + labs(title = "Throughput vs concurrent sessions (mixed query stream)", x = "concurrent sessions", y = "queries / s (log)") + theme_bench() + scale_colour_manual(values = conc_cols, name = NULL) + guides(colour = guide_legend(ncol = 3))
+  p2 <- ggplot(cs, aes(n, p95_ms, colour = impl, group = impl)) + geom_line(linewidth = 0.7) + geom_point(size = 2.2) + scale_y_log10(labels = scales::label_comma()) +
+    facet_grid(scale ~ lang) +
+    scale_x_continuous(breaks = unique(cs$n)) + labs(title = "p95 latency vs concurrent sessions", x = "concurrent sessions", y = "p95 wall time (ms, log)") + theme_bench() + scale_colour_manual(values = conc_cols, name = NULL) + guides(colour = guide_legend(ncol = 3))
+  save(p1, "concurrency_throughput", 11, 7); save(p2, "concurrency_p95", 11, 7)
 }
 
 ## 7. summary.md -----------------------------------------------------------------------------------------------

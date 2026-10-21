@@ -42,7 +42,7 @@ gene_mean_log_sigma = 1.5
 size_factor_log_sigma = 0.3
 gene_selection_seed = 7                       # gene sets are identical across scales
 bpcells_from = "csr"                          # the h5ad file BPCells directories are converted from
-bpcells_gene_major = false                    # also write gene-major (row-major) BPCells dirs
+bpcells_gene_major = true                     # also write row-major (gene-compressed) BPCells dirs: the layout cellDIVER objects use
 
 [workloads]
 n_features = [1, 10, 100, 1000]
@@ -91,8 +91,8 @@ reduction = 0.1
 fetch_cells = 0.1
 
 [implementations]
-julia = ["jl_h5ad_csc", "jl_h5ad_csr", "jl_bpcells", "jl_snapshot"]
-r_legacy = ["r_seurat_bpcells", "r_sce_backed", "r_anndata_backed", "raw_bpcells_r", "raw_seurat_fetchdata"]
-r_julia = ["r_seurat_bpcells", "r_sce_backed"]
+julia = ["jl_h5ad_csc", "jl_h5ad_csr", "jl_bpcells", "jl_bpcells_rowmajor", "jl_snapshot"]
+r_legacy = ["r_seurat_bpcells", "r_seurat_bpcells_rowmajor", "r_sce_backed", "r_anndata_backed", "raw_bpcells_r", "raw_bpcells_r_rowmajor", "raw_seurat_fetchdata"]
+r_julia = ["r_seurat_bpcells", "r_seurat_bpcells_rowmajor", "r_sce_backed"]
 python = ["raw_anndata_py", "raw_h5py_py", "py_scuba_sc"]
 optional = ["r_seurat_inmem", "raw_seurat_fetchdata", "jl_snapshot"]

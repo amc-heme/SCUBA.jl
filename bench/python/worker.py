@@ -19,7 +19,7 @@ def main():
     ap.add_argument("--scale", required=True); ap.add_argument("--impl", required=True)
     ap.add_argument("--worker", type=int, default=1); ap.add_argument("--duration", type=float, default=60)
     ap.add_argument("--warmup", type=float, default=10); ap.add_argument("--go", default=""); ap.add_argument("--seed", type=int, default=7)
-    ap.add_argument("--sessions", type=int, default=1); ap.add_argument("--run-id", default="")
+    ap.add_argument("--sessions", dest="n", type=int, default=1); ap.add_argument("--run-id", default="")
     ap.add_argument("--config", default=os.path.join(H.BENCH, "config", "bench.toml"))
     a = ap.parse_args()
     opts = argparse.Namespace(scale=a.scale, config=a.config, cache="warm", only=a.impl, resume=False, run_id=a.run_id, single="",

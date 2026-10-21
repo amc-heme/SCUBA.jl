@@ -1,6 +1,7 @@
 # Source opening, workload enumeration and single-workload execution shared by run.jl and worker.jl.
 
-const STORAGE = Dict("jl_h5ad_csc" => "h5ad_csc", "jl_h5ad_csr" => "h5ad_csr", "jl_bpcells" => "bpcells", "jl_snapshot" => "memory")
+const STORAGE = Dict("jl_h5ad_csc" => "h5ad_csc", "jl_h5ad_csr" => "h5ad_csr", "jl_bpcells" => "bpcells",
+                     "jl_bpcells_rowmajor" => "bpcells_rowmajor", "jl_snapshot" => "memory")
 
 # ---------------------------------------------------------------------------
 # sources
@@ -11,7 +12,8 @@ function open_source(ctx, impl)
         return open_h5ad(joinpath(d, "csc.h5ad"))
     elseif impl == "jl_h5ad_csr"
         return open_h5ad(joinpath(d, "csr.h5ad"))
-    elseif impl == "jl_bpcells"
+    elseif impl == "jl_bpcells" || impl == "jl_bpcells_rowmajor"
+        suffix = impl == "jl_bpcells" ? "" : "_rowmajor"
         h5 = open_h5ad(joinpath(d, "csc.h5ad"))
         obs = SCUBA.drop_cells(fetch_metadata(h5))
         reds = OrderedDict{String,Matrix{Float64}}()
@@ -20,8 +22,8 @@ function open_source(ctx, impl)
         end
         cells = all_cells(h5)
         close(h5)
-        mod, bcells = SCUBA.bpcells_modality(Dict("counts" => joinpath(d, "bpcells", "RNA_counts"),
-                                                  "data" => joinpath(d, "bpcells", "RNA_data")))
+        mod, bcells = SCUBA.bpcells_modality(Dict("counts" => joinpath(d, "bpcells", "RNA_counts" * suffix),
+                                                  "data" => joinpath(d, "bpcells", "RNA_data" * suffix)))
         bcells == cells || error("BPCells cell names differ from the h5ad")
         return MemoryAnnData(; cells, obs, modalities = OrderedDict("RNA" => mod), reductions = reds, default_layer = "data")
     elseif impl == "jl_snapshot"

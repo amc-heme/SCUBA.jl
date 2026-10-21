@@ -37,8 +37,8 @@ python-%:
 	$(TIMEOUT) $(PY) python/run.py --scale $* --run-id $(RUN_ID) --resume $(PY_FLAGS)
 
 cold-%:
-	for impl in jl_h5ad_csc jl_bpcells; do $(TOOLPY) tools/run_cold.py --scale $* --lang julia --impl $$impl --run-id $(RUN_ID); done
-	for impl in r_seurat_bpcells r_sce_backed; do $(TOOLPY) tools/run_cold.py --scale $* --lang r --impl $$impl --engine r --run-id $(RUN_ID); done
+	for impl in jl_h5ad_csc jl_bpcells jl_bpcells_rowmajor; do $(TOOLPY) tools/run_cold.py --scale $* --lang julia --impl $$impl --run-id $(RUN_ID); done
+	for impl in r_seurat_bpcells r_seurat_bpcells_rowmajor r_sce_backed; do $(TOOLPY) tools/run_cold.py --scale $* --lang r --impl $$impl --engine r --run-id $(RUN_ID); done
 	$(TOOLPY) tools/run_cold.py --scale $* --lang r --impl r_seurat_bpcells --engine julia --run-id $(RUN_ID)
 	$(TOOLPY) tools/run_cold.py --scale $* --lang python --impl raw_anndata_py --run-id $(RUN_ID)
 
@@ -47,6 +47,9 @@ conc-%:
 	$(TOOLPY) tools/concurrency.py --scale $* --lang julia --impl jl_bpcells --run-id $(RUN_ID)
 	$(TOOLPY) tools/concurrency.py --scale $* --lang julia --impl jl_h5ad_csc --mode threads --share shared --run-id $(RUN_ID)
 	$(TOOLPY) tools/concurrency.py --scale $* --lang julia --impl jl_bpcells --mode threads --share per_task --run-id $(RUN_ID)
+	$(TOOLPY) tools/concurrency.py --scale $* --lang julia --impl jl_bpcells_rowmajor --run-id $(RUN_ID)
+	$(TOOLPY) tools/concurrency.py --scale $* --lang r --impl r_seurat_bpcells_rowmajor --engine r --run-id $(RUN_ID) --sessions 1,2,4,8
+	$(TOOLPY) tools/concurrency.py --scale $* --lang r --impl r_seurat_bpcells_rowmajor --engine julia --run-id $(RUN_ID) --sessions 1,2,4,8
 	$(TOOLPY) tools/concurrency.py --scale $* --lang r --impl r_seurat_bpcells --engine r --run-id $(RUN_ID) --sessions 1,2,4,8
 	$(TOOLPY) tools/concurrency.py --scale $* --lang r --impl r_seurat_bpcells --engine julia --run-id $(RUN_ID) --sessions 1,2,4,8
 	$(TOOLPY) tools/concurrency.py --scale $* --lang python --impl raw_anndata_py --run-id $(RUN_ID) --sessions 1,2,4,8

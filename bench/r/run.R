@@ -22,10 +22,12 @@ load_ms <- as.numeric(Sys.time() - t0, units = "secs") * 1000
 suppressPackageStartupMessages({ library(SeuratObject); library(SingleCellExperiment); library(HDF5Array); library(BPCells) })
 T_LOADED <- Sys.time()
 
-STORAGE <- c(r_seurat_bpcells = "bpcells", r_sce_backed = "sce_h5sparse", r_anndata_backed = "h5ad_csc",
-             r_seurat_inmem = "memory", raw_bpcells_r = "bpcells", raw_seurat_fetchdata = "memory")
+STORAGE <- c(r_seurat_bpcells = "bpcells", r_seurat_bpcells_rowmajor = "bpcells_rowmajor", r_sce_backed = "sce_h5sparse",
+             r_anndata_backed = "h5ad_csc", r_seurat_inmem = "memory", raw_bpcells_r = "bpcells",
+             raw_bpcells_r_rowmajor = "bpcells_rowmajor", raw_seurat_fetchdata = "memory")
 # how each implementation names things
 KEYS <- list(r_seurat_bpcells = list(prefix = "rna_", layers = c(data = "data", counts = "counts"), red = c(X_umap = "umap", X_pca = "pca")),
+             r_seurat_bpcells_rowmajor = list(prefix = "rna_", layers = c(data = "data", counts = "counts"), red = c(X_umap = "umap", X_pca = "pca")),
              r_seurat_inmem = list(prefix = "rna_", layers = c(data = "data", counts = "counts"), red = c(X_umap = "umap", X_pca = "pca")),
              r_sce_backed = list(prefix = "RNA_", layers = c(data = "logcounts", counts = "counts"), red = c(X_umap = "UMAP", X_pca = "PCA")),
              r_anndata_backed = list(prefix = "X_", layers = c(data = NULL, counts = "counts"), red = c(X_umap = "X_umap", X_pca = "X_pca")))
@@ -36,6 +38,9 @@ open_object <- function(impl) {
   d <- ctx$data
   switch(impl,
     r_seurat_bpcells = readRDS(file.path(d, "seurat_bpcells.rds")),
+    r_seurat_bpcells_rowmajor = readRDS(file.path(d, "seurat_bpcells_rowmajor.rds")),
+    raw_bpcells_r_rowmajor = list(data = open_matrix_dir(file.path(d, "bpcells", "RNA_data_rowmajor")),
+                                  counts = open_matrix_dir(file.path(d, "bpcells", "RNA_counts_rowmajor"))),
     r_sce_backed = readRDS(file.path(d, "sce_h5sparse.rds")),
     r_anndata_backed = {
       reticulate::use_condaenv(cfg$suite$conda_env, required = FALSE)
@@ -63,7 +68,7 @@ run_work <- function(impl, obj, w, all_ids) {
     genes <- ctx$selection$gene_sets[[w$gene_set]]
     cells <- cells_for_subset(ctx, all_ids, w$cell_subset)
     e <- ctx$expected$feature[[paste(w$layer, w$gene_set, w$cell_subset, sep = "|")]]
-    if (impl == "raw_bpcells_r") {
+    if (impl %in% c("raw_bpcells_r", "raw_bpcells_r_rowmajor")) {
       m <- obj[[w$layer]]
       block <- if (is.null(cells)) as.matrix(m[genes, , drop = FALSE]) else as.matrix(m[genes, cells, drop = FALSE])
       return(list(chk = feature_checksum(block), n = ncol(block), exp = e$sum))
@@ -86,30 +91,30 @@ run_work <- function(impl, obj, w, all_ids) {
   if (w$workload == "matrix_sparse") {
     genes <- ctx$selection$gene_sets[[w$gene_set]]
     e <- ctx$expected$feature[[paste("data", w$gene_set, "all", sep = "|")]]
-    if (impl == "raw_bpcells_r") { m <- as(obj$data[genes, , drop = FALSE], "dgCMatrix"); return(list(chk = feature_checksum(m), n = ncol(m), exp = e$sum)) }
+    if (impl %in% c("raw_bpcells_r", "raw_bpcells_r_rowmajor")) { m <- as(obj$data[genes, , drop = FALSE], "dgCMatrix"); return(list(chk = feature_checksum(m), n = ncol(m), exp = e$sum)) }
     df <- fetch_data(obj, vars = paste0(k$prefix, genes), layer = if (impl == "r_anndata_backed") NULL else k$layers[["data"]])
     return(list(chk = feature_checksum(df), n = nrow(df), exp = e$sum))
   }
   if (w$workload == "metadata") {
-    if (impl %in% c("raw_bpcells_r", "raw_seurat_fetchdata")) return(NULL)
+    if (impl %in% c("raw_bpcells_r", "raw_bpcells_r_rowmajor", "raw_seurat_fetchdata")) return(NULL)
     if (w$extra == "full") { df <- as.data.frame(fetch_metadata(obj, full_table = TRUE)); return(list(chk = metadata_checksum_full(df), n = nrow(df), exp = ctx$expected$metadata$full)) }
     v <- fetch_metadata(obj, vars = w$extra, return_class = "vector")
     return(list(chk = metadata_checksum(v), n = length(v), exp = ctx$expected$metadata[[w$extra]]))
   }
   if (w$workload == "reduction") {
-    if (impl %in% c("raw_bpcells_r", "raw_seurat_fetchdata")) return(NULL)
+    if (impl %in% c("raw_bpcells_r", "raw_bpcells_r_rowmajor", "raw_seurat_fetchdata")) return(NULL)
     p <- strsplit(w$extra, "|", fixed = TRUE)[[1]]; dims <- as.integer(strsplit(p[2], "-")[[1]])
     df <- fetch_reduction(obj, reduction = k$red[[p[1]]], cells = all_ids, dims = dims[1]:dims[2])
     return(list(chk = feature_checksum(as.data.frame(df)), n = nrow(df), exp = ctx$expected$reduction[[w$extra]]))
   }
   if (w$workload == "fetch_cells") {
-    if (impl %in% c("raw_bpcells_r", "raw_seurat_fetchdata")) return(NULL)
+    if (impl %in% c("raw_bpcells_r", "raw_bpcells_r_rowmajor", "raw_seurat_fetchdata")) return(NULL)
     p <- strsplit(w$extra, ":", fixed = TRUE)[[1]]
     ids <- fetch_cells(obj, meta_var = p[1], meta_levels = p[2])
     return(list(chk = fetch_cells_checksum(ids), n = length(ids), exp = ctx$expected$fetch_cells[[w$extra]]))
   }
   if (w$workload == "unique_values") {
-    if (impl %in% c("raw_bpcells_r", "raw_seurat_fetchdata")) return(NULL)
+    if (impl %in% c("raw_bpcells_r", "raw_bpcells_r_rowmajor", "raw_seurat_fetchdata")) return(NULL)
     v <- unique_values(obj, var = w$extra)
     return(list(chk = unique_values_checksum(v), n = length(v), exp = ctx$expected$unique_values[[w$extra]]))
   }
@@ -121,7 +126,7 @@ run_work <- function(impl, obj, w, all_ids) {
 }
 
 all_cells_of <- function(impl, obj) {
-  if (impl == "raw_bpcells_r") colnames(obj$data) else if (impl == "raw_seurat_fetchdata") colnames(obj) else get_all_cells(obj)
+  if (impl %in% c("raw_bpcells_r", "raw_bpcells_r_rowmajor")) colnames(obj$data) else if (impl == "raw_seurat_fetchdata") colnames(obj) else get_all_cells(obj)
 }
 
 run_impl <- function(impl) {
@@ -141,7 +146,7 @@ run_impl <- function(impl) {
                                   open_ms = tm$wall_ms, alloc_mb = tm$alloc_mb, note = class(obj)[1])
   all_ids <- all_cells_of(impl, obj)
   works <- if (single) list(parse_single(opts$single)) else workloads(ctx)
-  if (!single && impl == "r_seurat_bpcells" && ctx$engine == "r") {      # legacy fetch_feature fast path
+  if (!single && impl %in% c("r_seurat_bpcells", "r_seurat_bpcells_rowmajor") && ctx$engine == "r") {      # legacy fetch_feature fast path
     extra <- Filter(function(w) w$workload == "feature" && w$cell_subset %in% c("all", "rand10"), works)
     works <- c(works, lapply(extra, function(w) { w$workload <- "feature_fast"; w }))
   }

@@ -34,9 +34,11 @@ def worker_cmd(lang, cfg, common, engine):
             os.path.join(BENCH, "python", "worker.py"), *common]
 
 
-def summarize(run_dir, pattern, n, lang, impl, mode, share, duration, out_rows):
+def summarize(run_dir, pattern, n, lang, impl, mode, share, duration, out_rows, engine="r", scale=""):
     rows = []
     for f in glob.glob(os.path.join(run_dir, pattern)):
+        if lang == "r" and f"_{impl}_{engine}_" not in os.path.basename(f):
+            continue
         with open(f) as fh:
             rows += [r for r in csv.DictReader(fh) if r["phase"] == "concurrent"]
     if not rows:
@@ -49,11 +51,11 @@ def summarize(run_dir, pattern, n, lang, impl, mode, share, duration, out_rows):
         if r["wall_ms"]:
             by_w.setdefault(r["workload"], []).append(float(r["wall_ms"]))
     bad = sum(1 for r in rows if r["checksum_ok"] == "false")
-    out_rows.append(dict(language=lang, implementation=impl, mode=mode, share=share, n=n, queries=len(rows), duration_s=duration,
+    out_rows.append(dict(language=lang, implementation=impl, engine=engine if lang == "r" else "native", scale=scale, mode=mode, share=share, n=n, queries=len(rows), duration_s=duration,
                          throughput_qps=len(rows) / duration, p50_ms=statistics.median(walls), p95_ms=pct(walls, 0.95), p99_ms=pct(walls, 0.99),
                          workload="all", checksum_mismatches=bad))
     for w, v in sorted(by_w.items()):
-        out_rows.append(dict(language=lang, implementation=impl, mode=mode, share=share, n=n, queries=len(v), duration_s=duration,
+        out_rows.append(dict(language=lang, implementation=impl, engine=engine if lang == "r" else "native", scale=scale, mode=mode, share=share, n=n, queries=len(v), duration_s=duration,
                              throughput_qps=len(v) / duration, p50_ms=statistics.median(v), p95_ms=pct(v, 0.95), p99_ms=pct(v, 0.99),
                              workload=w, checksum_mismatches=0))
 
@@ -65,6 +67,7 @@ def main():
     ap.add_argument("--mode", default="process", choices=["process", "threads"]); ap.add_argument("--share", default="shared")
     ap.add_argument("--sessions", default=None); ap.add_argument("--run-id", default="")
     ap.add_argument("--config", default=os.path.join(BENCH, "config", "bench.toml"))
+    ap.add_argument("--summarize-only", action="store_true", help="aggregate existing worker files without running")
     a = ap.parse_args()
     with open(a.config, "rb") as fh:
         cfg = tomllib.load(fh)
@@ -75,8 +78,13 @@ def main():
     os.makedirs(run_dir, exist_ok=True)
     out_rows = []
     for n in ns:
+        if a.summarize_only:
+            summarize(run_dir, f"{a.lang}_conc_{a.impl}_*{a.scale}_{a.mode}_n{n}_*.csv", n, a.lang, a.impl, a.mode,
+                      a.share if a.mode == "threads" else "process", conc["duration_s"], out_rows, engine=a.engine, scale=a.scale)
+            continue
         # remove stale worker files for this configuration
-        for f in glob.glob(os.path.join(run_dir, f"{a.lang}_conc_{a.impl}_*{a.scale}_{a.mode}_n{n}_*.csv")):
+        stale = f"{a.lang}_conc_{a.impl}_{a.engine}_{a.scale}_{a.mode}_n{n}_*.csv" if a.lang == "r" else f"{a.lang}_conc_{a.impl}_{a.scale}_{a.mode}_n{n}_*.csv"
+        for f in glob.glob(os.path.join(run_dir, stale)):
             os.remove(f)
         go = os.path.join(tempfile.mkdtemp(prefix="scuba-go-"), "go")
         common = ["--scale", a.scale, "--impl", a.impl, "--duration", str(conc["duration_s"]), "--warmup", str(conc["warmup_s"]),
@@ -95,8 +103,8 @@ def main():
         for p in procs:
             p.wait()
         print(f"[conc] n={n} done in {time.time() - t0:.0f}s", flush=True)
-        summarize(run_dir, f"{a.lang}_conc_{a.impl}_{a.scale}_{a.mode}_n{n}_*.csv", n, a.lang, a.impl, a.mode, a.share if a.mode == "threads" else "process",
-                  conc["duration_s"], out_rows)
+        summarize(run_dir, f"{a.lang}_conc_{a.impl}_*{a.scale}_{a.mode}_n{n}_*.csv", n, a.lang, a.impl, a.mode, a.share if a.mode == "threads" else "process",
+                  conc["duration_s"], out_rows, engine=a.engine, scale=a.scale)
     path = os.path.join(run_dir, "concurrency_summary.csv")
     exists = os.path.exists(path)
     with open(path, "a", newline="") as fh:
