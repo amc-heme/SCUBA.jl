@@ -16,6 +16,7 @@ cases. The golden tests (`fixtures/cases.json`) flag each divergence.
 | Single reduction dimension on SCE | column dropped or misnamed | `UMAP_1` works |
 | Reduction column names on SCE | matrix column names when present | always `key_dim` |
 | Unknown cells | class-dependent | `CellsNotFound` error |
+| `fetch_feature` names | keyed names from any assay (case-insensitive), grouped per assay; a *bare* name that is also a metadata column resolved metadata-first through `fetch_data` on non-BPCells assays | keyed names from any modality (case-sensitive), grouped per modality, requested order and names kept; bare names are only searched in the main modality (the R shim keeps colliding bare names on the legacy method) |
 | Large queries | warning at ≥ 1000 vars | warning when the dense result exceeds `SCUBA.MAX_DENSE_BYTES[]` (1 GiB) |
 | Layer missing in a single-layer modality (e.g. `obsm` data frame) | ignored (AnnData) or error (SCE) | the only layer is used, with a `:layer_substituted` warning |
 | `fetch_metadata(return_class = "vector")` | argument | method `fetch_metadata(src, var)` |

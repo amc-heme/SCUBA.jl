@@ -136,45 +136,83 @@ fetch_data(src::AbstractSingleCellSource, var::AbstractString; kw...) = fetch_da
 # ---------------------------------------------------------------------------
 # fetch_feature / fetch_matrix: single-modality fast path
 
-function _resolve_features(src, features, modality, layer)
-    mod = modality === nothing ? default_modality(src) : check_modality(src, modality)
-    lay = resolve_layer(src, mod, layer)
-    fi = feature_index(src, mod)
-    prefix = string(mod, "_")
-    idx = Int[]; names = String[]; missing_f = String[]
-    seen = Set{Int}()
+# One (modality, layer, feature indices, requested names) group per modality touched by `features`.
+# With `modality` given only that modality is searched (bare or `key_`-prefixed names). Without it,
+# a name prefixed with any modality's key (longest key first) goes to that modality and a bare name
+# to the main modality, matching the R package's `fetch_feature`.
+function _resolve_feature_groups(src, features, modality, layer)
+    mods = modality === nothing ? collect(String, modality_keys(src)) : [check_modality(src, modality)]
+    default = modality === nothing ? default_modality(src) : mods[1]
+    sort!(mods; by = ncodeunits, rev = true)
+    groups = Dict{String,Tuple{Vector{Int},Vector{String}}}()
+    order = String[]
+    seen = Set{Tuple{String,Int}}()
+    missing_f = String[]
     for f in features
         s = String(f)
-        i = get(fi, s, 0)
-        if i == 0 && startswith(s, prefix)
-            i = get(fi, strip_key(s, mod), 0)
+        mod = ""; i = 0
+        for m in mods
+            if ncodeunits(s) > ncodeunits(m) + 1 && startswith(s, m) && codeunit(s, ncodeunits(m) + 1) == UInt8('_')
+                i = get(feature_index(src, m), strip_key(s, m), 0)
+                i == 0 || (mod = m; break)
+            end
+        end
+        if i == 0
+            i = get(feature_index(src, default), s, 0)
+            mod = default
         end
         if i == 0
             push!(missing_f, s)
-        elseif !(i in seen)
-            push!(seen, i); push!(idx, i); push!(names, s)
+        elseif !((mod, i) in seen)
+            push!(seen, (mod, i))
+            g = get!(groups, mod) do
+                push!(order, mod); (Int[], String[])
+            end
+            push!(g[1], i); push!(g[2], s)
         end
     end
-    isempty(idx) && throw(VarsNotFound(missing_f, length(features), case_suggestions(src, missing_f)))
+    isempty(order) && throw(VarsNotFound(missing_f, length(features), case_suggestions(src, missing_f)))
     isempty(missing_f) || scuba_warn(:some_vars_not_found,
-        "The following requested features were not found in modality '$mod'" * _shown(missing_f) * ": " *
+        "The following requested features were not found" *
+        (modality === nothing ? "" : " in modality '$default'") * _shown(missing_f) * ": " *
         _join(missing_f), missing_f...)
-    return mod, lay, idx, names
+    return [(m, resolve_layer(src, m, layer), groups[m][1], groups[m][2]) for m in order]
+end
+
+# Single-modality resolution for `fetch_matrix`.
+function _resolve_features(src, features, modality, layer)
+    groups = _resolve_feature_groups(src, features, modality, layer)
+    length(groups) == 1 || throw(ArgumentError("features span several modalities (" *
+        join((g[1] for g in groups), ", ") * "); fetch_matrix takes features from one modality"))
+    return groups[1]
 end
 
 """
     fetch_feature(src, features; modality=nothing, layer=nothing, cells=nothing) -> DataFrame
 
-Fetch features from one modality (default: the main modality). Features may be given bare or
-prefixed with that modality's key. Unlike `fetch_data`, metadata and reductions are not searched.
+Fetch expression features. Bare names are looked up in `modality` (default: the main modality);
+names prefixed with a modality's key (`ab_CD34`) come from that modality, so one call may span
+several modalities. Columns keep the requested names. Unlike `fetch_data`, metadata and reductions
+are not searched.
 """
 function fetch_feature(src::AbstractSingleCellSource, features::AbstractVector{<:AbstractString};
                        modality = nothing, layer = nothing, cells = nothing, eltype::Type{<:Real} = Float64)
-    mod, lay, idx, names = _resolve_features(src, features, modality, layer)
+    groups = _resolve_feature_groups(src, features, modality, layer)
     cell_idx, cell_names = resolve_cells(src, cells)
-    cols = expression_columns(src, mod, lay, idx, cell_idx, eltype)
-    resolved = [ResolvedVar(n, n, :expression, mod, lay, i) for (n, i) in zip(names, idx)]
-    return assemble_table(cell_names, [n => cols[j] for (j, n) in enumerate(names)], resolved)
+    pairs = Pair{String,Vector{eltype}}[]
+    resolved = ResolvedVar[]
+    for (mod, lay, idx, names) in groups
+        cols = expression_columns(src, mod, lay, idx, cell_idx, eltype)
+        for (j, n) in enumerate(names)
+            push!(pairs, n => cols[j]); push!(resolved, ResolvedVar(n, n, :expression, mod, lay, idx[j]))
+        end
+    end
+    if length(groups) > 1   # restore the requested order across modalities
+        pos = Dict(String(f) => k for (k, f) in enumerate(features))
+        perm = sortperm([pos[p.first] for p in pairs])
+        pairs = pairs[perm]; resolved = resolved[perm]
+    end
+    return assemble_table(cell_names, pairs, resolved)
 end
 fetch_feature(src::AbstractSingleCellSource, feature::AbstractString; kw...) = fetch_feature(src, [feature]; kw...)
 

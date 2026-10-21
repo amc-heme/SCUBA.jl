@@ -51,6 +51,14 @@ function test_source_conformance(src; main_feature, alt_modality, alt_feature, r
         ff = fetch_feature(src, [main_feature, keyed_main])
         @test names(ff) == ["cell", main_feature]
         @test ff[!, main_feature] == df[!, keyed_main]
+        # keyed names from another modality are fetched too, in the requested order, keeping their names
+        ffm = fetch_feature(src, [keyed_alt, main_feature])
+        @test names(ffm) == ["cell", keyed_alt, main_feature]
+        @test ffm[!, keyed_alt] == df[!, keyed_alt] && ffm[!, main_feature] == df[!, keyed_main]
+        @test_throws ArgumentError fetch_matrix(src, [keyed_alt, main_feature])
+        # a bare alt-modality feature is not searched outside the main modality
+        @test_throws SCUBA.VarsNotFound fetch_feature(src, [alt_feature])
+        @test names(fetch_feature(src, [alt_feature]; modality = alt_modality)) == ["cell", alt_feature]
         X, c, f = fetch_matrix(src, [main_feature])
         @test vec(X) == df[!, keyed_main]
         Xs, _, _ = fetch_matrix(src, [main_feature]; sparse = true)
