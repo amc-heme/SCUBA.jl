@@ -1,6 +1,6 @@
 # SCUBA benchmark summary
 
-Generated 2026-10-21 00:33 MDT from `results.parquet` (843347 rows, 843242 ok).
+Generated 2026-10-21 00:35 MDT from `results.parquet` (843317 rows, 843242 ok).
 
 ## Interpretation
 
@@ -216,18 +216,6 @@ on its internal SSD.
 | implementation | engine | scale | status | note | rows |
 |---|---|---|---|---|---|
 | jl_h5ad_csr | native | 1M | skipped | rule: impl=jl_h5ad_csr scale=1M n_features>=10 | 63 |
-| r_sce_backed | r | 100k | error | NA/NaN argument |  3 |
-| r_seurat_bpcells | julia | 100k | error | NA/NaN argument |  3 |
-| r_seurat_bpcells | r | 100k | error | NA/NaN argument |  3 |
-| r_seurat_bpcells_rowmajor | julia | 100k | error | NA/NaN argument |  3 |
-| r_seurat_bpcells_rowmajor | r | 100k | error | NA/NaN argument |  3 |
-| raw_anndata_py | none | 100k | error | not enough values to unpack (expected 2, got 1) |  3 |
-| r_sce_backed | r | 1M | error | NA/NaN argument |  2 |
-| r_seurat_bpcells | julia | 1M | error | NA/NaN argument |  2 |
-| r_seurat_bpcells | r | 1M | error | NA/NaN argument |  2 |
-| r_seurat_bpcells_rowmajor | julia | 1M | error | NA/NaN argument |  2 |
-| r_seurat_bpcells_rowmajor | r | 1M | error | NA/NaN argument |  2 |
-| raw_anndata_py | none | 1M | error | not enough values to unpack (expected 2, got 1) |  2 |
 | r_anndata_backed | r | 100k | skipped | R anndata 0.8.0 returns python-class objects; install remotes::install_version('anndata', '0.7.5.6') |  1 |
 | r_anndata_backed | r | 10k | skipped | R anndata 0.8.0 returns python-class objects; install remotes::install_version('anndata', '0.7.5.6') |  1 |
 | r_anndata_backed | r | 1M | skipped | R anndata 0.8.0 returns python-class objects; install remotes::install_version('anndata', '0.7.5.6') |  1 |
