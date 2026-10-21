@@ -67,3 +67,13 @@
         close(src)
     end
 end
+
+@testset "BPCells column construction" begin
+    dir = fixture_path("AML_BPCells")
+    if isdir(dir)
+        m = open_bpcells(joinpath(dir, "RNA_data"))
+        fidx = [5, 1, 300]; cidx = [10, 250, 1]
+        @test reduce(hcat, SCUBA.pull_columns(m, fidx, cidx, Float64)) == SCUBA.pull(m, fidx, cidx)
+        @test eltype(SCUBA.pull_columns(m, fidx, cidx, Float32)[1]) == Float32
+    end
+end

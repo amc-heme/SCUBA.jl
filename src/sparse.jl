@@ -1,5 +1,10 @@
 # Gather kernels shared by the in-memory, HDF5 and BPCells backends.
 
+# Output sinks: a dense cells × features matrix, or one vector per feature.
+@inline _put!(out::AbstractMatrix, i::Int, j::Int, v) = (@inbounds out[i, j] = v; nothing)
+@inline _put!(cols::Vector{<:AbstractVector}, i::Int, j::Int, v) = (@inbounds cols[j][i] = v; nothing)
+_columns(::Type{T}, ncells::Int, nfeat::Int) where {T} = Vector{T}[zeros(T, ncells) for _ in 1:nfeat]
+
 """`position_lookup(n, idx)` — vector `pos` with `pos[idx[k]] = k` and 0 elsewhere."""
 function position_lookup(n::Integer, idx::AbstractVector{Int})
     pos = zeros(Int, n)
@@ -31,36 +36,38 @@ end
 
 Dense block from a sparse matrix stored cells × features (AnnData orientation, columns are features).
 """
-function gather_cf(A::SparseMatrixCSC, cell_idx::AbstractVector{Int}, feature_idx::AbstractVector{Int})
-    out = zeros(Float64, length(cell_idx), length(feature_idx))
+function gather_cf!(out, A::SparseMatrixCSC, cell_idx::AbstractVector{Int}, feature_idx::AbstractVector{Int})
     pos = position_lookup(size(A, 1), cell_idx)
     rows = rowvals(A); vals = nonzeros(A)
     @inbounds for (j, f) in enumerate(feature_idx)
         for k in nzrange(A, f)
             p = pos[rows[k]]
-            p == 0 || (out[p, j] = vals[k])
+            p == 0 || _put!(out, p, j, vals[k])
         end
     end
     return out
 end
+gather_cf(A::SparseMatrixCSC, cell_idx::AbstractVector{Int}, feature_idx::AbstractVector{Int}) =
+    gather_cf!(zeros(Float64, length(cell_idx), length(feature_idx)), A, cell_idx, feature_idx)
 
 """
     gather_fc(A, cell_idx, feature_idx) -> Matrix{Float64}
 
 Dense block from a sparse matrix stored features × cells (Seurat/SCE/BPCells orientation, columns are cells).
 """
-function gather_fc(A::SparseMatrixCSC, cell_idx::AbstractVector{Int}, feature_idx::AbstractVector{Int})
-    out = zeros(Float64, length(cell_idx), length(feature_idx))
+function gather_fc!(out, A::SparseMatrixCSC, cell_idx::AbstractVector{Int}, feature_idx::AbstractVector{Int})
     pos = position_lookup(size(A, 1), feature_idx)
     rows = rowvals(A); vals = nonzeros(A)
     @inbounds for (i, c) in enumerate(cell_idx)
         for k in nzrange(A, c)
             p = pos[rows[k]]
-            p == 0 || (out[i, p] = vals[k])
+            p == 0 || _put!(out, i, p, vals[k])
         end
     end
     return out
 end
+gather_fc(A::SparseMatrixCSC, cell_idx::AbstractVector{Int}, feature_idx::AbstractVector{Int}) =
+    gather_fc!(zeros(Float64, length(cell_idx), length(feature_idx)), A, cell_idx, feature_idx)
 
 """Sparse block (cells × features) from a cells × features sparse matrix."""
 function gather_cf_sparse(A::SparseMatrixCSC, cell_idx::AbstractVector{Int}, feature_idx::AbstractVector{Int})
@@ -99,6 +106,19 @@ gather_dense(A::AbstractMatrix, cell_idx::AbstractVector{Int}, feature_idx::Abst
 """Dense block from any features × cells matrix."""
 gather_dense_t(A::AbstractMatrix, cell_idx::AbstractVector{Int}, feature_idx::AbstractVector{Int}) =
     Matrix{Float64}(permutedims(A[feature_idx, cell_idx]))
+
+# Column (per-feature vector) variants
+function gather_cells_by_features_columns(A::AbstractMatrix, cidx, fidx, ::Type{T}) where {T}
+    cols = _columns(T, length(cidx), length(fidx))
+    if A isa SparseMatrixCSC
+        gather_cf!(cols, A, cidx, fidx)
+    else
+        @inbounds for (j, f) in enumerate(fidx), (i, c) in enumerate(cidx)
+            cols[j][i] = A[c, f]
+        end
+    end
+    return cols
+end
 
 # Convenience: dispatch on storage kind
 gather_cells_by_features(A::SparseMatrixCSC, cidx, fidx) = gather_cf(A, cidx, fidx)

@@ -90,3 +90,21 @@ end
         close(ref)
     end
 end
+
+@testset "H5AD column construction matches the matrix path" begin
+    path = fixture_path("AML_h5ad.h5ad")
+    if isfile(path)
+        src = open_h5ad(path)
+        fidx = [10, 3, 400]; cidx = [250, 1, 77, 78]
+        for layer in ("X", "counts")
+            cols = SCUBA.expression_columns(src, "X", layer, fidx, cidx, Float64)
+            @test reduce(hcat, cols) == SCUBA.expression(src, "X", layer, fidx, cidx)
+            @test eltype(SCUBA.expression_columns(src, "X", layer, fidx, cidx, Float32)[1]) == Float32
+        end
+        colsp = SCUBA.expression_columns(src, "protein", "X", [1, 5], cidx, Float64)
+        @test reduce(hcat, colsp) == SCUBA.expression(src, "protein", "X", [1, 5], cidx)
+        df = fetch_data(src, ["X_GAPDH", "protein_CD117-AB"]; eltype = Float32)
+        @test eltype(df.X_GAPDH) == Float32 && eltype(df[!, "protein_CD117-AB"]) == Float32
+        close(src)
+    end
+end

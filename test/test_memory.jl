@@ -46,3 +46,35 @@
         @test names(drop_cells(df)) == ["cell", "cell_id"]
     end
 end
+
+@testset "eltype option and dense-result guard" begin
+    src = synthetic_source()
+    df32 = fetch_data(src, ["g1_dummy_not_found", "RNA_g2", "AB_p1", "score"]; eltype = Float32, strict = false)
+    @test eltype(df32.RNA_g2) == Float32 && eltype(df32.AB_p1) == Float32
+    @test eltype(df32.score) == Float64                                   # metadata untouched
+    @test df32.RNA_g2 == Float32.(fetch_data(src, ["RNA_g2"]).RNA_g2)
+    @test eltype(fetch_feature(src, ["g2"]; eltype = Float32).g2) == Float32
+    # the cell column shares the source's id vector when all cells are requested
+    @test fetch_data(src, ["g2"]).cell === SCUBA.cell_ids(src)
+    @test fetch_data(src, ["g2"]; cells = ["c2", "c1"]).cell == ["c2", "c1"]
+    old = SCUBA.MAX_DENSE_BYTES[]
+    SCUBA.MAX_DENSE_BYTES[] = 8 * 6 * 2 - 1       # two features × six cells of Float64 is just over
+    try
+        (_, w) = with_collected_warnings(() -> fetch_data(src, ["g2", "g3"]))
+        @test any(x -> x.code == :large_result, w)
+        (_, w2) = with_collected_warnings(() -> fetch_data(src, ["g2", "g3"]; eltype = Float32))
+        @test !any(x -> x.code == :large_result, w2)
+        SCUBA.DENSE_LIMIT_MODE[] = :error
+        @test_throws ResultTooLarge fetch_data(src, ["g2", "g3"])
+        @test fetch_data(src, ["g2"]).g2 == [i + 20 for i in 1:6]
+    finally
+        SCUBA.MAX_DENSE_BYTES[] = old
+        SCUBA.DENSE_LIMIT_MODE[] = :warn
+    end
+    # column construction matches the matrix path on every synthetic layer
+    for layer in ("data", "counts")
+        cols = SCUBA.expression_columns(src, "RNA", layer, [2, 5, 1], [6, 1, 3], Float64)
+        M = SCUBA.expression(src, "RNA", layer, [2, 5, 1], [6, 1, 3])
+        @test reduce(hcat, cols) == M
+    end
+end

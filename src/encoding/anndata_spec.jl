@@ -166,9 +166,12 @@ end
 Dense cells × features block from a CSR/CSC matrix element. `indptr` is the cached,
 0-based index pointer (length n+1 along the compressed axis).
 """
-function read_sparse_block(store::AbstractStore, ref::MatrixRef, indptr::Vector{Int},
-                           cell_idx::AbstractVector{Int}, feature_idx::AbstractVector{Int})
-    out = zeros(Float64, length(cell_idx), length(feature_idx))
+read_sparse_block(store::AbstractStore, ref::MatrixRef, indptr::Vector{Int},
+                  cell_idx::AbstractVector{Int}, feature_idx::AbstractVector{Int}) =
+    read_sparse_block!(zeros(Float64, length(cell_idx), length(feature_idx)), store, ref, indptr, cell_idx, feature_idx)
+
+function read_sparse_block!(out, store::AbstractStore, ref::MatrixRef, indptr::Vector{Int},
+                            cell_idx::AbstractVector{Int}, feature_idx::AbstractVector{Int})
     data_path = ref.path * "/data"; idx_path = ref.path * "/indices"
     if ref.kind == :csc
         # compressed axis = features (columns); indices are cell (row) ids
@@ -182,7 +185,7 @@ function read_sparse_block(store::AbstractStore, ref::MatrixRef, indptr::Vector{
                 j = colpos[f]
                 @inbounds for t in (indptr[f] + 1):indptr[f + 1]
                     p = pos[ind[t - a + 1] + 1]
-                    p == 0 || (out[p, j] = val[t - a + 1])
+                    p == 0 || _put!(out, p, j, val[t - a + 1])
                 end
             end
         end
@@ -198,7 +201,7 @@ function read_sparse_block(store::AbstractStore, ref::MatrixRef, indptr::Vector{
                 i = rowpos[c]
                 @inbounds for t in (indptr[c] + 1):indptr[c + 1]
                     p = fpos[ind[t - a + 1] + 1]
-                    p == 0 || (out[i, p] = val[t - a + 1])
+                    p == 0 || _put!(out, i, p, val[t - a + 1])
                 end
             end
         end
@@ -236,9 +239,11 @@ function read_sparse_block_sparse(store::AbstractStore, ref::MatrixRef, indptr::
 end
 
 """Dense block from a dense matrix element stored python-shape (n_obs, n_var)."""
-function read_dense_block(store::AbstractStore, ref::MatrixRef,
-                          cell_idx::AbstractVector{Int}, feature_idx::AbstractVector{Int})
-    out = Matrix{Float64}(undef, length(cell_idx), length(feature_idx))
+read_dense_block(store::AbstractStore, ref::MatrixRef, cell_idx::AbstractVector{Int}, feature_idx::AbstractVector{Int}) =
+    read_dense_block!(Matrix{Float64}(undef, length(cell_idx), length(feature_idx)), store, ref, cell_idx, feature_idx)
+
+function read_dense_block!(out, store::AbstractStore, ref::MatrixRef,
+                           cell_idx::AbstractVector{Int}, feature_idx::AbstractVector{Int})
     colpos = position_lookup(ref.n_var, feature_idx)
     for run in consecutive_runs(sort(feature_idx))
         # Julia dims are (n_var, n_obs): rows = features
@@ -246,7 +251,7 @@ function read_dense_block(store::AbstractStore, ref::MatrixRef,
         for (r, f) in enumerate(run)
             j = colpos[f]
             @inbounds for (i, c) in enumerate(cell_idx)
-                out[i, j] = block[r, c]
+                _put!(out, i, j, block[r, c])
             end
         end
     end
@@ -254,13 +259,15 @@ function read_dense_block(store::AbstractStore, ref::MatrixRef,
 end
 
 """Dense block from a data-frame-encoded matrix (each feature is a column dataset)."""
-function read_dataframe_block(store::AbstractStore, ref::MatrixRef,
-                              cell_idx::AbstractVector{Int}, feature_idx::AbstractVector{Int})
-    out = Matrix{Float64}(undef, length(cell_idx), length(feature_idx))
+read_dataframe_block(store::AbstractStore, ref::MatrixRef, cell_idx::AbstractVector{Int}, feature_idx::AbstractVector{Int}) =
+    read_dataframe_block!(Matrix{Float64}(undef, length(cell_idx), length(feature_idx)), store, ref, cell_idx, feature_idx)
+
+function read_dataframe_block!(out, store::AbstractStore, ref::MatrixRef,
+                               cell_idx::AbstractVector{Int}, feature_idx::AbstractVector{Int})
     for (j, f) in enumerate(feature_idx)
         col = read_element(store, ref.path * "/" * ref.columns[f])
         @inbounds for (i, c) in enumerate(cell_idx)
-            out[i, j] = Float64(col[c])
+            _put!(out, i, j, col[c])
         end
     end
     return out

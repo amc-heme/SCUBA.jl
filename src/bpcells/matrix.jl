@@ -231,6 +231,24 @@ function pull(m::BPCellsMatrix, fidx::AbstractVector{Int}, cidx::AbstractVector{
     return out
 end
 
+function pull_columns(m::BPCellsMatrix, fidx::AbstractVector{Int}, cidx::AbstractVector{Int}, ::Type{T}) where {T}
+    cols = _columns(T, length(cidx), length(fidx))
+    if !m.transposed
+        fpos = position_lookup(m.nrow, fidx)
+        _scan(m, collect(cidx)) do i, f0, v
+            p = fpos[f0 + 1]
+            p == 0 || (@inbounds cols[p][i] = v)
+        end
+    else
+        cpos = position_lookup(m.ncol, cidx)
+        _scan(m, collect(fidx)) do j, c0, v
+            p = cpos[c0 + 1]
+            p == 0 || (@inbounds cols[j][p] = v)
+        end
+    end
+    return cols
+end
+
 function pull_sparse(m::BPCellsMatrix, fidx::AbstractVector{Int}, cidx::AbstractVector{Int})
     I = Int[]; J = Int[]; V = Float64[]
     if !m.transposed

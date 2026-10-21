@@ -10,6 +10,11 @@ A matrix-like layer whose values live elsewhere (disk, another process). Impleme
 abstract type LazyMatrix end
 pull(m::LazyMatrix, feature_idx, cell_idx) = error("pull not implemented for $(typeof(m))")
 pull_sparse(m::LazyMatrix, feature_idx, cell_idx) = sparse(pull(m, feature_idx, cell_idx))
+"""`pull_columns(m, feature_idx, cell_idx, T)` — per-feature vectors; default copies from `pull`."""
+function pull_columns(m::LazyMatrix, feature_idx, cell_idx, ::Type{T}) where {T}
+    M = pull(m, feature_idx, cell_idx)
+    return Vector{T}[Vector{T}(view(M, :, j)) for j in 1:size(M, 2)]
+end
 
 const LayerData = Union{AbstractMatrix,LazyMatrix}
 
@@ -104,6 +109,11 @@ function expression(src::MemoryAnnData, m::AbstractString, layer::AbstractString
                     fidx::AbstractVector{Int}, cidx::AbstractVector{Int})
     L = _layer(src, m, layer)
     L isa LazyMatrix ? pull(L, fidx, cidx) : gather_cells_by_features(L, cidx, fidx)
+end
+function expression_columns(src::MemoryAnnData, m::AbstractString, layer::AbstractString,
+                            fidx::AbstractVector{Int}, cidx::AbstractVector{Int}, ::Type{T}) where {T<:Real}
+    L = _layer(src, m, layer)
+    L isa LazyMatrix ? pull_columns(L, fidx, cidx, T) : gather_cells_by_features_columns(L, cidx, fidx, T)
 end
 supports_sparse(src::MemoryAnnData, m::AbstractString, layer::AbstractString) = true
 function expression_sparse(src::MemoryAnnData, m::AbstractString, layer::AbstractString,

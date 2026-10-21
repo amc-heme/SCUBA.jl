@@ -11,11 +11,19 @@ import SCUBA: cell_ids, modality_keys, default_modality, default_layer, feature_
 const np = PythonCall.pynew()
 const pd = PythonCall.pynew()
 const sps = PythonCall.pynew()
+const pa = PythonCall.pynew()          # pyarrow, optional
+const HAVE_PYARROW = Ref(false)
 
 function __init__()
     PythonCall.pycopy!(np, pyimport("numpy"))
     PythonCall.pycopy!(pd, pyimport("pandas"))
     PythonCall.pycopy!(sps, pyimport("scipy.sparse"))
+    try
+        PythonCall.pycopy!(pa, pyimport("pyarrow"))
+        HAVE_PYARROW[] = true
+    catch
+        HAVE_PYARROW[] = false
+    end
     return nothing
 end
 
@@ -216,12 +224,60 @@ function _pyseries(v::AbstractVector)
     end
 end
 
+# Cell index construction. Building one Python str per cell is the dominant cost of the Python
+# wrapper at 1M cells (~150 ms), so: (1) when pyarrow is available the ids are packed in Julia into
+# Arrow large_string buffers (offsets + bytes) and wrapped zero-copy; (2) the index built for a
+# source's full id vector is cached by identity, so repeated all-cells requests pay nothing.
+const INDEX_CACHE = WeakKeyDict{Vector{String},Py}()
+
+function _arrow_string_index(cells::AbstractVector{<:AbstractString})
+    n = length(cells)
+    offsets = Vector{Int64}(undef, n + 1)
+    offsets[1] = 0
+    total = 0
+    @inbounds for (i, c) in enumerate(cells)
+        total += ncodeunits(c); offsets[i + 1] = total
+    end
+    bytes = Vector{UInt8}(undef, total)
+    pos = 1
+    @inbounds for c in cells
+        nb = ncodeunits(c)
+        unsafe_copyto!(pointer(bytes, pos), pointer(c), nb)
+        pos += nb
+    end
+    arr = pa.Array.from_buffers(pa.large_string(), n,
+        pylist([pybuiltins.None, pa.py_buffer(np.array(Py(offsets); dtype = np.int64, copy = true)),
+                pa.py_buffer(np.array(Py(bytes); dtype = np.uint8, copy = true))]))
+    return pd.Index(pd.array(arr; dtype = pd.ArrowDtype(pa.large_string())); name = "cell")
+end
+
+function _cell_index(cells::AbstractVector{<:AbstractString})
+    build() = HAVE_PYARROW[] ? _arrow_string_index(cells) : pd.Index(_pystrs(cells); name = "cell")
+    cells isa Vector{String} || return build()
+    return get!(build, INDEX_CACHE, cells)
+end
+
 function _to_pandas(df::DataFrame, cells::AbstractVector{<:AbstractString})
+    index = _cell_index(cells)
+    cols = names(df)
+    # Wide all-numeric results (feature fetches): hand pandas one 2-D block instead of N columns,
+    # which it would otherwise consolidate column by column (~25 ms per column at 1M cells).
+    if length(cols) >= 2 && all(n -> df[!, n] isa Vector{<:Union{Float32,Float64}}, cols)
+        T = eltype(df[!, cols[1]])
+        if all(n -> eltype(df[!, n]) == T, cols)
+            M = Matrix{T}(undef, nrow(df), length(cols))
+            for (j, n) in enumerate(cols)
+                copyto!(view(M, :, j), df[!, n])
+            end
+            arr = np.array(Py(M); dtype = T == Float32 ? np.float32 : np.float64, copy = true)   # (cells, features), Fortran order
+            return pd.DataFrame(arr; columns = pylist(cols), index = index, copy = false)
+        end
+    end
     d = pydict()
-    for n in names(df)
+    for n in cols
         d[n] = _pyseries(df[!, n])
     end
-    return pd.DataFrame(d; index = pd.Index(_pystrs(cells); name = "cell"))
+    return pd.DataFrame(d; index = index)
 end
 
 """

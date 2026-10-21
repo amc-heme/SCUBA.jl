@@ -59,6 +59,18 @@ columns (in `feature_idx` order).
 """
 expression(src::AbstractSingleCellSource, modality::AbstractString, layer::AbstractString,
            feature_idx::AbstractVector{Int}, cell_idx::AbstractVector{Int}) = _notimpl(:expression, src)
+"""
+    expression_columns(src, modality, layer, feature_idx, cell_idx, T) -> Vector{Vector{T}}
+
+Per-feature result columns (each of length `length(cell_idx)`, in `cell_idx` order). The default
+materialises `expression` and copies; backends override it to fill the columns directly so a
+large request never holds a second dense copy.
+"""
+function expression_columns(src::AbstractSingleCellSource, modality::AbstractString, layer::AbstractString,
+                            feature_idx::AbstractVector{Int}, cell_idx::AbstractVector{Int}, ::Type{T}) where {T<:Real}
+    M = expression(src, modality, layer, feature_idx, cell_idx)
+    return Vector{T}[Vector{T}(view(M, :, j)) for j in 1:size(M, 2)]
+end
 metadata_names(src::AbstractSingleCellSource) = _notimpl(:metadata_names, src)
 """`metadata_column(src, name, cell_idx)` — one metadata column, subset to `cell_idx`."""
 metadata_column(src::AbstractSingleCellSource, name::AbstractString, cell_idx::AbstractVector{Int}) =

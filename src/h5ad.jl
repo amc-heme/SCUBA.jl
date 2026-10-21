@@ -117,6 +117,19 @@ function expression(src::H5ADSource, m::AbstractString, layer::AbstractString,
         return read_dataframe_block(src.store, ref, cidx, fidx)
     end
 end
+function expression_columns(src::H5ADSource, m::AbstractString, layer::AbstractString,
+                            fidx::AbstractVector{Int}, cidx::AbstractVector{Int}, ::Type{T}) where {T<:Real}
+    ref = _h5ref(src, m, layer)
+    cols = _columns(T, length(cidx), length(fidx))
+    if ref.kind == :csr || ref.kind == :csc
+        read_sparse_block!(cols, src.store, ref, _indptr(src, ref), cidx, fidx)
+    elseif ref.kind == :dense
+        read_dense_block!(cols, src.store, ref, cidx, fidx)
+    else
+        read_dataframe_block!(cols, src.store, ref, cidx, fidx)
+    end
+    return cols
+end
 supports_sparse(src::H5ADSource, m::AbstractString, layer::AbstractString) =
     _h5ref(src, m, layer).kind in (:csr, :csc)
 function expression_sparse(src::H5ADSource, m::AbstractString, layer::AbstractString,

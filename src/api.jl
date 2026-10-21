@@ -1,7 +1,21 @@
 # Public accessor API, implemented once over the AbstractSingleCellSource interface.
 
-"""Dense-result size (bytes) above which `fetch_data` emits a `:large_result` warning."""
+"""Dense-result size (bytes) above which `fetch_data` emits a `:large_result` warning (or errors, see [`DENSE_LIMIT_MODE`](@ref))."""
 const MAX_DENSE_BYTES = Ref{Int}(2^30)
+"""`:warn` (default) or `:error`: what `fetch_data` does when the dense result exceeds `MAX_DENSE_BYTES[]`."""
+const DENSE_LIMIT_MODE = Ref{Symbol}(:warn)
+
+"""Thrown when `DENSE_LIMIT_MODE[] == :error` and a request exceeds `MAX_DENSE_BYTES[]`."""
+struct ResultTooLarge <: SCUBAError
+    bytes::Int
+    limit::Int
+    nfeatures::Int
+    ncells::Int
+end
+Base.showerror(io::IO, e::ResultTooLarge) =
+    print(io, "Dense result of ", e.nfeatures, " features × ", e.ncells, " cells (~", round(e.bytes / 2^30; digits = 1),
+          " GiB) exceeds SCUBA.MAX_DENSE_BYTES (", round(e.limit / 2^30; digits = 1), " GiB). Request fewer features, a cell subset, ",
+          "eltype = Float32, or use fetch_matrix(...; sparse = true).")
 
 # ---------------------------------------------------------------------------
 # Cells
@@ -14,7 +28,8 @@ const MAX_DENSE_BYTES = Ref{Int}(2^30)
 function resolve_cells(src::AbstractSingleCellSource, cells)
     if cells === nothing
         ids = cell_ids(src)
-        return collect(1:length(ids)), collect(String, ids)
+        # the source's own id vector is reused (no copy); result tables are built with copycols = false
+        return collect(1:length(ids)), ids isa Vector{String} ? ids : collect(String, ids)
     end
     cells isa AbstractString && (cells = [cells])
     idx = cell_index(src)
@@ -49,10 +64,11 @@ per found variable, in input order.
 
 `layer` selects the matrix within each modality (default: [`default_layer`](@ref)). `cells`
 subsets and orders the rows. With `strict=false` (default) missing variables produce a
-warning; with `strict=true` they raise `VarsNotFound`.
+warning; with `strict=true` they raise `VarsNotFound`. `eltype` is the element type of the
+expression columns (`Float64` default; `Float32` halves the memory of large results).
 """
 function fetch_data(src::AbstractSingleCellSource, vars::AbstractVector{<:AbstractString};
-                    layer = nothing, cells = nothing, strict::Bool = false)
+                    layer = nothing, cells = nothing, strict::Bool = false, eltype::Type{<:Real} = Float64)
     res = resolve_vars(src, vars; layer)
     if strict && !isempty(res.missing)
         throw(VarsNotFound(res.missing, length(vars), case_suggestions(src, res.missing)))
@@ -76,20 +92,21 @@ function fetch_data(src::AbstractSingleCellSource, vars::AbstractVector{<:Abstra
     end
 
     warnings = copy(res.warnings)
-    est = 8 * nexpr * length(cell_idx)
+    est = sizeof(eltype) * nexpr * length(cell_idx)
     if est > MAX_DENSE_BYTES[]
+        DENSE_LIMIT_MODE[] == :error && throw(ResultTooLarge(est, MAX_DENSE_BYTES[], nexpr, length(cell_idx)))
         push!(warnings, SCUBAWarning(:large_result,
             "The requested result is large (~$(round(est / 2^30; digits = 1)) GiB dense for $nexpr features × " *
-            "$(length(cell_idx)) cells). Consider fetch_matrix(...; sparse=true) or fewer features."))
+            "$(length(cell_idx)) cells). Consider fetch_matrix(...; sparse=true), eltype = Float32, or fewer features."))
     end
 
     for ((mod, lay), ps) in expr_groups
         fidx = [found[p].index for p in ps]
-        M = expression(src, mod, lay, fidx, cell_idx)
-        size(M) == (length(cell_idx), length(fidx)) ||
-            error("backend $(source_name(src)) returned a $(size(M)) block for $(length(cell_idx)) cells × $(length(fidx)) features")
+        cols = expression_columns(src, mod, lay, fidx, cell_idx, eltype)
+        length(cols) == length(fidx) && all(c -> length(c) == length(cell_idx), cols) ||
+            error("backend $(source_name(src)) returned $(length(cols)) columns for $(length(fidx)) features × $(length(cell_idx)) cells")
         for (j, p) in enumerate(ps)
-            columns[p] = M[:, j]
+            columns[p] = cols[j]
         end
     end
     for (key, ps) in red_groups
@@ -142,12 +159,12 @@ Fetch features from one modality (default: the main modality). Features may be g
 prefixed with that modality's key. Unlike `fetch_data`, metadata and reductions are not searched.
 """
 function fetch_feature(src::AbstractSingleCellSource, features::AbstractVector{<:AbstractString};
-                       modality = nothing, layer = nothing, cells = nothing)
+                       modality = nothing, layer = nothing, cells = nothing, eltype::Type{<:Real} = Float64)
     mod, lay, idx, names = _resolve_features(src, features, modality, layer)
     cell_idx, cell_names = resolve_cells(src, cells)
-    M = expression(src, mod, lay, idx, cell_idx)
+    cols = expression_columns(src, mod, lay, idx, cell_idx, eltype)
     resolved = [ResolvedVar(n, n, :expression, mod, lay, i) for (n, i) in zip(names, idx)]
-    return assemble_table(cell_names, [n => M[:, j] for (j, n) in enumerate(names)], resolved)
+    return assemble_table(cell_names, [n => cols[j] for (j, n) in enumerate(names)], resolved)
 end
 fetch_feature(src::AbstractSingleCellSource, feature::AbstractString; kw...) = fetch_feature(src, [feature]; kw...)
 

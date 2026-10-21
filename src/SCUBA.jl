@@ -31,6 +31,7 @@ include("h5ad.jl")
 include("bpcells/bp128.jl")
 include("bpcells/matrix.jl")
 include("fixtures.jl")
+include("precompile.jl")
 
 # core API
 export fetch_data, fetch_feature, fetch_matrix, fetch_metadata, fetch_reduction, fetch_cells,
@@ -42,7 +43,7 @@ export AbstractSingleCellSource, MemoryAnnData, Modality, H5ADSource, open_h5ad,
        rsource, pysource, open_zarr, to_pandas
 # errors & warnings
 export SCUBAError, VarsNotFound, MetadataNotFound, LayerNotFound, ModalityNotFound, ReductionNotFound,
-       NoDefaultReduction, InvalidDims, CellsNotFound, NonCategoricalVar, ReadOnlySource,
+       NoDefaultReduction, InvalidDims, CellsNotFound, NonCategoricalVar, ReadOnlySource, ResultTooLarge,
        SCUBAWarning, with_collected_warnings
 # fixtures
 export fixtures_dir, fixture_path

@@ -35,7 +35,8 @@ function assemble_table(cell_names::AbstractVector{<:AbstractString},
                         columns::AbstractVector{<:Pair{String}},
                         resolved::Union{Nothing,AbstractVector{ResolvedVar}} = nothing)
     name = _pick_cell_column_name(first.(columns))
-    df = DataFrame(name => collect(String, cell_names); copycols = false)
+    ids = cell_names isa Vector{String} ? cell_names : collect(String, cell_names)   # may alias the source's ids
+    df = DataFrame(name => ids; copycols = false)
     for (n, v) in columns
         df[!, n] = v
     end
