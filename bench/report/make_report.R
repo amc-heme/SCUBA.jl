@@ -125,6 +125,8 @@ if (length(conc_files)) {
 
 ## 7. summary.md -----------------------------------------------------------------------------------------------
 md <- c("# SCUBA benchmark summary", "", sprintf("Generated %s from `%s` (%d rows, %d ok).", format(Sys.time(), "%Y-%m-%d %H:%M %Z"), basename(res_path), nrow(df), nrow(ok)), "")
+interp <- file.path(out, "interpretation.md")
+if (file.exists(interp)) md <- c(md, readLines(interp), "")
 env_files <- list.files(file.path(bench, "results", "env"), full.names = TRUE)
 if (length(env_files)) {
   e <- jsonlite::fromJSON(tail(sort(env_files), 1))
