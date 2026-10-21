@@ -20,3 +20,5 @@ python/**/*.egg-info/
 .venv/
 # misc
 .DS_Store
+# sysimage build project (created by tools/build_sysimage.jl; contains machine-specific paths)
+tools/sysimage/

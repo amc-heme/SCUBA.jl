@@ -1,5 +1,7 @@
-# Build a Julia system image with SCUBA and its bridges compiled in, for fast cold starts from
-# R (JuliaCall), Python (juliacall) or Julia itself.
+# Build a Julia system image with SCUBA (and optionally its bridges) compiled in, for fast cold
+# starts from R (JuliaCall), Python (juliacall) or Julia itself. Needs a C compiler on the PATH
+# (gcc/clang; `apt install build-essential` on Debian/Ubuntu) and network access for Pkg. On
+# Julia 1.13 RCall cannot be included (LLVM error), so use --no-rcall for the R engine's image.
 #
 #   julia tools/build_sysimage.jl [--out PATH] [--no-rcall] [--no-pythoncall] [--no-workload] [--cpu-target TARGET]
 #
@@ -7,14 +9,6 @@
 #   R:      options(SCUBA.sysimage = "<path>")   before the first SCUBA call (or scuba_build_sysimage())
 #   Python: PYTHON_JULIACALL_SYSIMAGE=<path>
 #   Julia:  julia -J <path>
-using Pkg
-Pkg.activate(joinpath(@__DIR__, "sysimage"))
-Pkg.develop(path = joinpath(@__DIR__, ".."); io = devnull)
-# PackageCompiler needs every image package in the active project (Pkg.add is idempotent)
-Pkg.add(["PackageCompiler", "RCall", "PythonCall", "DataFrames", "CategoricalArrays", "SparseArrays", "OrderedCollections", "Zarr"]; io = devnull)
-Pkg.instantiate(io = devnull)
-using PackageCompiler
-
 args = copy(ARGS)
 function switch!(name)              # boolean flag
     i = findfirst(==(name), args)
@@ -32,7 +26,26 @@ end
 no_rcall = switch!("--no-rcall")
 no_py = switch!("--no-pythoncall")
 no_workload = switch!("--no-workload")
-cpu_target = option!("--cpu-target", PackageCompiler.default_app_cpu_target())
+cpu_target_arg = option!("--cpu-target", nothing)
+
+using Pkg
+mkpath(joinpath(@__DIR__, "sysimage"))     # build project, created on demand (not tracked in git)
+Pkg.activate(joinpath(@__DIR__, "sysimage"))
+Pkg.develop(path = joinpath(@__DIR__, ".."); io = devnull)
+# PackageCompiler needs every image package in the active project (Pkg.add is idempotent). Only
+# the bridges that go into the image are added: RCall's build step needs an R installation and
+# PythonCall drags in CondaPkg, so neither should be required for an image that excludes it.
+wanted = ["PackageCompiler", "DataFrames", "CategoricalArrays", "SparseArrays", "OrderedCollections", "Zarr"]
+no_rcall || push!(wanted, "RCall")
+no_py || push!(wanted, "PythonCall")
+Pkg.add(wanted; io = devnull)
+for bridge in ("RCall", "PythonCall")   # left over from an earlier build with other flags
+    bridge in wanted || !haskey(Pkg.project().dependencies, bridge) || Pkg.rm(bridge; io = devnull)
+end
+Pkg.instantiate(io = devnull)
+using PackageCompiler
+cpu_target = something(cpu_target_arg, PackageCompiler.default_app_cpu_target())
+
 ext = Sys.isapple() ? ".dylib" : Sys.iswindows() ? ".dll" : ".so"
 default_out = joinpath(homedir(), ".julia", "scuba", "SCUBA.$(Sys.KERNEL)-$(Sys.ARCH)$ext")
 out = option!("--out", default_out)
