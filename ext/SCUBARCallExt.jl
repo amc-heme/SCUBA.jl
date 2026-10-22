@@ -16,15 +16,21 @@ import SCUBA: cell_ids, modality_keys, default_modality, default_layer, feature_
 
 const R_HELPERS = """
 scuba_bp_dir <- function(x) {
-  # Return the on-disk directory of a BPCells matrix if it is a plain MatrixDir, possibly wrapped
+  # Return list(dir, transpose) for a BPCells matrix that is a plain MatrixDir, possibly wrapped
   # only in dimension-renaming wrappers; NULL otherwise (transformed/queued matrices need R).
+  # BPCells implements t() by flipping the `transpose` slot (set consistently on every level of a
+  # wrapper chain). The flag alone does not say whether the files are transposed relative to the
+  # logical matrix: directories written by transpose_storage_order() carry storage_order "row"
+  # and transpose = TRUE while their shape file is the logical shape. The Julia side resolves the
+  # orientation from the layer's dimensions and uses this flag only as a tie-breaker.
+  transpose <- methods::.hasSlot(x, "transpose") && isTRUE(x@transpose)
   while (!methods::is(x, "MatrixDir")) {
     cls <- class(x)[1]
     if (!(cls %in% c("RenameDims")) || !methods::.hasSlot(x, "matrix")) return(NULL)
     x <- x@matrix
   }
   if (!methods::.hasSlot(x, "dir")) return(NULL)
-  x@dir
+  list(dir = x@dir, transpose = transpose)
 }
 scuba_seurat_layers <- function(assay) {
   if (methods::is(assay, "Assay5")) return(SeuratObject::Layers(assay))
@@ -130,10 +136,27 @@ function RSeuratSource(obj::RObject)
         for l in layers
             m = R"scuba_seurat_layer_data($assay, $l)"
             if rcopy(Bool, rcall(:inherits, m, "IterableMatrix"))
-                dir = R"scuba_bp_dir($m)"
-                if !rcopy(Bool, rcall(Symbol("is.null"), dir))
-                    d = rcopy(String, dir)
-                    isdir(d) && (native[l] = BPCellsMatrix(d))
+                info = R"scuba_bp_dir($m)"
+                if !rcopy(Bool, rcall(Symbol("is.null"), info))
+                    d = rcopy(String, R"$info$dir"); tr = rcopy(Bool, R"$info$transpose")
+                    if isdir(d)
+                        # Orientation of the files relative to the layer: decided by the layer's
+                        # dimensions (features × cells); objects built as t(write_matrix_dir(t(m)))
+                        # store cells × features. For square layers the R transpose flag decides
+                        # (files are transposed when flag ⊻ row-major storage).
+                        want = (length(feats), length(cells))
+                        bm = BPCellsMatrix(d)
+                        swapped = (bm.nrow, bm.ncol) != want && (bm.ncol, bm.nrow) == want
+                        square = bm.nrow == bm.ncol && (bm.nrow, bm.ncol) == want
+                        if swapped || (square && (tr ⊻ bm.transposed))
+                            bm = BPCellsMatrix(d; transpose = true)
+                        end
+                        if (bm.nrow, bm.ncol) == want
+                            native[l] = bm
+                        else
+                            @warn "SCUBA: BPCells directory shape does not match the Seurat layer; reading layer through R" assay = a layer = l dir = d disk = (bm.nrow, bm.ncol) layer_shape = want
+                        end
+                    end
                 end
             end
         end
@@ -489,8 +512,10 @@ function _precompile_workload()
             scuba_pc_tmp <- tempfile("scuba_pc_bp")
             scuba_pc_bp_col <- BPCells::write_matrix_dir(methods::as(scuba_pc_counts, "IterableMatrix"), file.path(scuba_pc_tmp, "col"))
             scuba_pc_bp_row <- BPCells::transpose_storage_order(scuba_pc_bp_col, outdir = file.path(scuba_pc_tmp, "row"), tmpdir = scuba_pc_tmp)
+            scuba_pc_bp_t <- BPCells::t(BPCells::write_matrix_dir(BPCells::t(methods::as(scuba_pc_counts, "IterableMatrix")), file.path(scuba_pc_tmp, "cells_x_genes")))
             scuba_pc_seurat_bp <- SeuratObject::CreateSeuratObject(counts = scuba_pc_bp_row, meta.data = scuba_pc_meta)
             scuba_pc_seurat_bp[["RNA"]]\$data <- scuba_pc_bp_col
+            scuba_pc_seurat_bp[["RNA"]]\$scale.data <- scuba_pc_bp_t
             scuba_pc_seurat_bp[["umap"]] <- SeuratObject::CreateDimReducObject(embeddings = scuba_pc_umap, key = "UMAP_", assay = "RNA")
             """)
             push!(objs, (reval("scuba_pc_seurat_bp"), "rna_g1", "umap"))

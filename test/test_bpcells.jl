@@ -68,6 +68,22 @@
     end
 end
 
+@testset "BPCells transposed directories" begin
+    dir = fixture_path("AML_BPCells")
+    if isdir(dir)
+        m = open_bpcells(joinpath(dir, "RNA_data"))
+        mt = open_bpcells(joinpath(dir, "RNA_data"); transpose = true)   # files hold the transpose of the logical matrix
+        @test (mt.nrow, mt.ncol) == (m.ncol, m.nrow)
+        @test mt.row_names == m.col_names && mt.col_names == m.row_names
+        @test mt.transposed != m.transposed
+        f = [1, 3, 7]; c = [2, 5, 9, 11]
+        @test SCUBA.pull(mt, c, f) == permutedims(SCUBA.pull(m, f, c))
+        @test Matrix(SCUBA.pull_sparse(mt, c, f)) == permutedims(SCUBA.pull(m, f, c))
+        # out-of-range compressed vectors are rejected instead of read out of bounds
+        @test_throws ArgumentError SCUBA.pull(m, [1], [m.ncol + 1])
+    end
+end
+
 @testset "BPCells column construction" begin
     dir = fixture_path("AML_BPCells")
     if isdir(dir)

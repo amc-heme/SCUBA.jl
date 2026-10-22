@@ -105,7 +105,15 @@ end
 
 const BP_CHUNK_CACHE_MAX = Ref{Int}(8192)
 
-function BPCellsMatrix(dir::AbstractString)
+"""
+    BPCellsMatrix(dir; transpose = false)
+
+Open a BPCells matrix directory. The logical shape is features × cells. With `transpose = true`
+the directory stores cells × features (BPCells' `t()` keeps the files and flips a flag on the R
+object; Seurat layers built as `t(write_matrix_dir(t(m)))` look like this), so the on-disk axes
+are swapped: its `col` storage order is then feature-major, i.e. the fast layout for feature fetches.
+"""
+function BPCellsMatrix(dir::AbstractString; transpose::Bool = false)
     isdir(dir) || throw(ArgumentError("BPCells directory not found: $dir"))
     version = strip(read(joinpath(dir, "version"), String))
     m = match(r"^(packed|unpacked)-(double|float|uint)-matrix-v(\d+)$", version)
@@ -133,11 +141,19 @@ function BPCellsMatrix(dir::AbstractString)
         index = _bp_mmap(joinpath(dir, "index"), UInt32)
         val = _bp_mmap(joinpath(dir, "val"), vtype == "double" ? Float64 : vtype == "float" ? Float32 : UInt32)
     end
-    return BPCellsMatrix(String(dir), version, packed, order == "row", nrow, ncol, rown, coln, idxptr,
+    transposed = order == "row"
+    if transpose
+        nrow, ncol = ncol, nrow
+        rown, coln = coln, rown
+        transposed = !transposed
+    end
+    length(idxptr) == (transposed ? nrow : ncol) + 1 ||
+        error("BPCells directory $dir: idxptr has $(length(idxptr)) entries, expected $((transposed ? nrow : ncol) + 1) for shape $(nrow)×$(ncol) ($(order)-major$(transpose ? ", transposed" : ""))")
+    return BPCellsMatrix(String(dir), version, packed, transposed, nrow, ncol, rown, coln, idxptr,
                          index, istream, val, vstream, Dict{Int,Vector{UInt32}}(), Dict{Int,Vector{UInt32}}(),
                          ReentrantLock())
 end
-open_bpcells(dir::AbstractString) = BPCellsMatrix(dir)
+open_bpcells(dir::AbstractString; transpose::Bool = false) = BPCellsMatrix(dir; transpose)
 
 Base.size(m::BPCellsMatrix) = (m.ncol, m.nrow)            # cells × features
 row_names(m::BPCellsMatrix) = m.row_names
@@ -179,6 +195,11 @@ end
 # visit(k, other0, value) where k is the position in `comps`. Vectors are processed in file order
 # and each packed chunk is decoded at most once per contiguous run, with no locking.
 function _scan(visit, m::BPCellsMatrix, comps::AbstractVector{Int})
+    # the kernel reads idxptr without bounds checks, so validate the compressed-vector ids here
+    n = length(m.idxptr) - 1
+    for c in comps
+        1 <= c <= n || throw(ArgumentError("BPCells scan: compressed vector $c out of range 1:$n for $(m.dir)"))
+    end
     # function barrier: the fields are unions, the kernel specialises on the concrete types
     return _scan_kernel(visit, m.idxptr, comps, m.index, m.index_stream, m.val, m.val_stream)
 end
