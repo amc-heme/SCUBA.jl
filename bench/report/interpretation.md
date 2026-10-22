@@ -53,10 +53,11 @@ R engine and Julia engine) and raw library baselines on synthetic datasets of 10
 - **R bridge overheads removed (2026-10-22, evening).** Cell names no longer cross the JuliaCall
   bridge in either direction (R already holds them), and expression columns are written by Julia
   straight into R double vectors instead of being built in Julia and copied. One gene over 1M
-  cells from R: file-backed h5ad 242 ms → 35 ms, row-major Seurat 110 ms → 18 ms. 1000 genes:
-  h5ad 4.1 s → 0.9 s warm (first call after start-up ~6 s while 8 GB of fresh R memory is
-  touched), Seurat 4.7 s → 2.0 s. Process peak for the 1000-gene fetch: Seurat 18.6 GB → 12.0 GB,
-  h5ad 10.6 GB, against the 8 GB result itself. `options(SCUBA.julia_eltype)` is therefore a no-op.
+  cells from R: file-backed h5ad 245 ms → 26 ms, row-major Seurat 110 ms → 16 ms (bench medians).
+  1000 genes: h5ad 4.1 s → 2.9 s and Seurat 4.7 s → 2.7 s in the harness, where every repetition
+  allocates and touches 8 GB of fresh R memory; a warm R session that reuses that memory does the
+  h5ad fetch in 0.9 s. Process peak for the 1000-gene fetch: Seurat 18.6 GB → 12.0 GB, h5ad
+  10.6 GB, against the 8 GB result itself. `options(SCUBA.julia_eltype)` is therefore a no-op.
 - **Memory.** A 1000-gene × 1M-cell dense result is 8 GB; peak RSS reached 25 GB in Julia and 60 GB
   in R in these runs. SCUBA.jl now fills result columns directly for results above 256 MiB (peak
   ~9 GB for the same query), offers `eltype = Float32` and a sparse `fetch_matrix`, and the size
