@@ -25,6 +25,7 @@ include("sparse.jl")
 include("table.jl")
 include("api.jl")
 include("memory.jl")
+include("overlay.jl")
 include("encoding/store.jl")
 include("encoding/anndata_spec.jl")
 include("h5ad.jl")
@@ -39,7 +40,7 @@ export fetch_data, fetch_feature, fetch_matrix, fetch_metadata, fetch_reduction,
        reduction_dimnames, default_layer, default_reduction, default_modality, unique_values, n_unique,
        set_metadata!, update_object_metadata!, snapshot, resolve_vars, cell_column, cells, drop_cells
 # sources
-export AbstractSingleCellSource, MemoryAnnData, Modality, H5ADSource, open_h5ad, BPCellsMatrix, open_bpcells,
+export AbstractSingleCellSource, MemoryAnnData, Modality, MetadataOverlay, H5ADSource, open_h5ad, BPCellsMatrix, open_bpcells,
        rsource, pysource, open_zarr, to_pandas
 # errors & warnings
 export SCUBAError, VarsNotFound, MetadataNotFound, LayerNotFound, ModalityNotFound, ReductionNotFound,

@@ -72,6 +72,11 @@ function _precompile_workload()
             fetch_data(h5, ["g1"]; cells = cells[2:3], eltype = Float32)
             fetch_matrix(h5, ["g1", "g2"]; sparse = true); fetch_metadata(h5); fetch_metadata(h5, "group")
             fetch_reduction(h5); fetch_cells(h5, "group", ["a"]); unique_values(h5, "group")
+            ov = MetadataOverlay(h5; obs = DataFrame())
+            fetch_data(ov, ["X_g1", "g2"]; eltype = Float32); fetch_feature(ov, ["g1"]); fetch_reduction(ov)
+            set_metadata!(ov, DataFrame(new = collect(1:8), grp = categorical(["a", "b", "a", "b", "a", "b", "a", "b"])))
+            fetch_data(ov, ["g1", "new", "grp"]); fetch_metadata(ov); unique_values(ov, "grp")
+            fetch_metadata(MetadataOverlay(h5), "group")
             snapshot(h5); close(h5)
         catch err
             @debug "precompile workload: h5ad part skipped" err

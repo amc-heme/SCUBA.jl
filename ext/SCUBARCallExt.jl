@@ -6,11 +6,11 @@
 module SCUBARCallExt
 
 using SCUBA, RCall, DataFrames, CategoricalArrays, SparseArrays, OrderedCollections
-using SCUBA: AbstractSingleCellSource, SourceCache, LazyMatrix, BPCellsMatrix, pull, pull_sparse,
-             gather_features_by_cells, gather_fc_sparse, ModalityNotFound, LayerNotFound, ReductionNotFound,
-             ReadOnlySource
+using SCUBA: AbstractSingleCellSource, SourceCache, LazyMatrix, BPCellsMatrix, pull, pull_sparse, pull_columns,
+             gather_features_by_cells, gather_fc_sparse, gather_fc!, _columns, ModalityNotFound, LayerNotFound,
+             ReductionNotFound, ReadOnlySource
 import SCUBA: cell_ids, modality_keys, default_modality, default_layer, feature_names, layer_names,
-              expression, expression_sparse, supports_sparse, metadata_names, metadata_column, metadata_table,
+              expression, expression_columns, expression_sparse, supports_sparse, metadata_names, metadata_column, metadata_table,
               reduction_keys, reduction_ndims, reduction, source_name, set_metadata!, invalidate!,
               canonical_modality, canonical_reduction, reduction_search_names
 
@@ -76,6 +76,20 @@ function _block_from_r(s::RObject, nf::Int, nc::Int)
     else
         return Matrix{Float64}(permutedims(rcopy(Matrix{Float64}, s)))
     end
+end
+# Typed per-feature columns from an R slice (features × cells); the R-sliced values are copied into
+# `T` directly so a large request never holds a Float64 intermediate on the Julia side.
+function _columns_from_r(s::RObject, nf::Int, nc::Int, ::Type{T}) where {T}
+    cols = _columns(T, nc, nf)
+    if _is_dgc(s)
+        gather_fc!(cols, _dgc_to_sparse(s), collect(1:nc), collect(1:nf))
+    else
+        M = rcopy(Matrix{T}, s)                       # features × cells, converted while copying
+        for j in 1:nf
+            copyto!(cols[j], view(M, j, :))
+        end
+    end
+    return cols
 end
 function _sparse_block_from_r(s::RObject, nf::Int, nc::Int)
     _is_dgc(s) && return gather_fc_sparse(_dgc_to_sparse(s), collect(1:nc), collect(1:nf))
@@ -202,6 +216,15 @@ function expression(s::RSeuratSource, m::AbstractString, layer::AbstractString, 
     f = _rint(collect(fidx)); c = _rint(collect(cidx))
     return _block_from_r(R"scuba_slice($mat, $f, $c)", length(fidx), length(cidx))
 end
+function expression_columns(s::RSeuratSource, m::AbstractString, layer::AbstractString, fidx::AbstractVector{Int},
+                            cidx::AbstractVector{Int}, ::Type{T}) where {T<:Real}
+    mod = _mod(s, m)
+    nat = get(mod.native, String(layer), nothing)
+    nat === nothing || return pull_columns(nat, fidx, cidx, T)
+    mat = _layer_obj(s, mod, layer)
+    f = _rint(collect(fidx)); c = _rint(collect(cidx))
+    return _columns_from_r(R"scuba_slice($mat, $f, $c)", length(fidx), length(cidx), T)
+end
 supports_sparse(::RSeuratSource, ::AbstractString, ::AbstractString) = true
 function expression_sparse(s::RSeuratSource, m::AbstractString, layer::AbstractString, fidx::AbstractVector{Int}, cidx::AbstractVector{Int})
     mod = _mod(s, m)
@@ -309,6 +332,12 @@ function expression(s::RSCESource, m::AbstractString, layer::AbstractString, fid
     f = _rint(collect(fidx)); c = _rint(collect(cidx))
     return _block_from_r(R"scuba_slice($mat, $f, $c)", length(fidx), length(cidx))
 end
+function expression_columns(s::RSCESource, m::AbstractString, layer::AbstractString, fidx::AbstractVector{Int},
+                            cidx::AbstractVector{Int}, ::Type{T}) where {T<:Real}
+    mat = _assay_obj(s, _mod(s, m), layer)
+    f = _rint(collect(fidx)); c = _rint(collect(cidx))
+    return _columns_from_r(R"scuba_slice($mat, $f, $c)", length(fidx), length(cidx), T)
+end
 supports_sparse(::RSCESource, ::AbstractString, ::AbstractString) = true
 function expression_sparse(s::RSCESource, m::AbstractString, layer::AbstractString, fidx::AbstractVector{Int}, cidx::AbstractVector{Int})
     mat = _assay_obj(s, _mod(s, m), layer)
@@ -370,7 +399,60 @@ const S = SCUBA
 const SRC_CACHE = OrderedDict{Ptr{Cvoid}, Tuple{Any, Any}}()
 const SRC_CACHE_MAX = Ref(16)
 set_cache_max!(n::Integer) = (SRC_CACHE_MAX[] = max(1, Int(n)); nothing)
-function getsrc(obj)
+# File-backed sources (the R package's `scuba_source` class hands over a path, not an object): a
+# second LRU keyed by the normalised path. The R side keeps the metadata, so the source is wrapped
+# in an empty MetadataOverlay and Julia never resolves metadata names for it.
+const PATH_CACHE = OrderedDict{String, Any}()
+function getsrc(path::AbstractString)
+    key = String(path)
+    hit = get(PATH_CACHE, key, nothing)
+    if hit !== nothing
+        delete!(PATH_CACHE, key); PATH_CACHE[key] = hit
+        return hit
+    end
+    while length(PATH_CACHE) >= SRC_CACHE_MAX[]
+        k = first(keys(PATH_CACHE)); old = PATH_CACHE[k]; delete!(PATH_CACHE, k)
+        try close(old) catch end
+    end
+    src = S.MetadataOverlay(S.open_h5ad(key); obs = DataFrame())
+    PATH_CACHE[key] = src
+    return src
+end
+path_cache_size() = length(PATH_CACHE)
+function source_close(path::AbstractString)
+    src = pop!(PATH_CACHE, String(path), nothing)
+    src === nothing || (try close(src) catch end)
+    return nothing
+end
+_uns_strings(src, key) = try
+    inner = src isa S.MetadataOverlay ? src.inner : src
+    if inner isa S.H5ADSource && S.store_haskey(inner.store, "uns/" * key)
+        collect(String, string.(S.read_element(inner.store, "uns/" * key)))
+    else
+        String[]
+    end
+catch
+    String[]
+end
+# Schema and full metadata table of a file, for the R package's file-backed object.
+function source_open(path::AbstractString)
+    src = getsrc(path)
+    inner = src.inner
+    mods = collect(String, S.modality_keys(inner))
+    # Dicts cross JuliaCall as named lists; nested vectors do not
+    feats = Dict{String,Vector{String}}(m => collect(String, S.feature_names(inner, m)) for m in mods)
+    layers = Dict{String,Vector{String}}(m => collect(String, S.layer_names(inner, m)) for m in mods)
+    reds = collect(String, S.reduction_keys(inner))
+    ndims = Int[S.reduction_ndims(inner, r) for r in reds]
+    dred = try S.default_reduction(inner) catch; "" end
+    obs = totable(S.fetch_metadata(inner))
+    return (modalities = mods, features = feats, layers = layers, reductions = reds, red_ndims = ndims,
+            default_reduction = dred, default_layer = String(S.default_layer(inner)),
+            uns_assays = _uns_strings(inner, "cellDIVER_assays"), uns_reductions = _uns_strings(inner, "cellDIVER_reductions"),
+            cells = collect(String, S.all_cells(inner)), obs = obs)
+end
+
+function getsrc(obj::RObject)
     key = Ptr{Cvoid}(obj.p)
     hit = get(SRC_CACHE, key, nothing)
     if hit !== nothing
@@ -384,7 +466,14 @@ function getsrc(obj)
     SRC_CACHE[key] = (obj, src)
     return src
 end
-clear_cache() = (empty!(SRC_CACHE); nothing)
+function clear_cache()
+    empty!(SRC_CACHE)
+    for src in values(PATH_CACHE)
+        try close(src) catch end
+    end
+    empty!(PATH_CACHE)
+    return nothing
+end
 cache_size() = length(SRC_CACHE)
 
 function run(f, obj, args...; kwargs...)
@@ -414,16 +503,31 @@ function totable(df::DataFrame)
             push!(columns, v)
         end
     end
+    # the requested spelling of each column (Julia may rename, e.g. an alt-modality bare name), so R
+    # can restore the caller's column order after appending its own metadata columns
+    inputs = String[(cm = colmetadata(df, n, S.COLUMN_META_KEY, nothing); cm === nothing ? n : String(cm.input)) for n in names_]
     (names = names_, columns = columns, cat_idx = cat_idx, cat_codes = cat_codes, cat_levels = cat_levels,
-     cat_ordered = cat_ordered, cells = String.(S.cells(df)))
+     cat_ordered = cat_ordered, cells = String.(S.cells(df)), inputs = inputs)
 end
 
-function fetch_data(obj, vars, layer, cells)
-    df, w = run(S.fetch_data, obj, asvec(vars); layer = layer, cells = cells)
-    (totable(df)..., warnings = w)
+_eltype(s::AbstractString) = s == "Float32" ? Float32 : s == "Float64" ? Float64 :
+    throw(ArgumentError("eltype must be \"Float32\" or \"Float64\", got \"$s\""))
+# `allow_empty`: the R side will append metadata columns itself, so a request whose expression
+# part resolves to nothing returns an empty table plus the not-found message instead of erroring.
+function fetch_data(obj, vars, layer, cells, eltype = "Float64", allow_empty = false)
+    T = _eltype(eltype)
+    try
+        df, w = run(S.fetch_data, obj, asvec(vars); layer = layer, cells = cells, eltype = T)
+        return (totable(df)..., warnings = w)
+    catch e
+        (allow_empty && e isa S.VarsNotFound) || rethrow()
+        src = getsrc(obj)
+        ids = cells === nothing ? collect(String, S.all_cells(src)) : collect(String, asvec(cells))
+        return (totable(S.assemble_table(ids, Pair{String,Vector{Float64}}[]))..., warnings = [sprint(showerror, e)])
+    end
 end
-function fetch_feature(obj, features, layer, cells)
-    df, w = run(S.fetch_feature, obj, asvec(features); layer = layer, cells = cells)
+function fetch_feature(obj, features, layer, cells, modality = nothing, eltype = "Float64")
+    df, w = run(S.fetch_feature, obj, asvec(features); modality = modality, layer = layer, cells = cells, eltype = _eltype(eltype))
     (totable(df)..., warnings = w)
 end
 function fetch_metadata(obj, vars, cells, full_table)
@@ -564,8 +668,20 @@ function _precompile_workload()
         ScubaR.features_in_assay(obj, nothing); ScubaR.reduction_dimnames(obj, red, [1, 2])
         ScubaR.default_layer(obj); ScubaR.default_reduction(obj); ScubaR.default_reduction_name(obj)
         ScubaR.unique_values(obj, "group"); ScubaR.n_unique(obj, "group")
+        ScubaR.fetch_data(obj, feat, nothing, nothing, "Float32", false)
         ScubaR.clear_cache()
     end
+    # file-backed path (the R package's scuba_source class)
+    tmp = joinpath(mktempdir(), "tiny.h5ad")
+    SCUBA._write_tiny_h5ad(tmp, ["c1", "c2", "c3", "c4"], ["g1", "g2"], sparse(Float64[1 0; 0 2; 3 0; 0 4]),
+                           DataFrame(group = categorical(["a", "b", "a", "b"]), score = [1.0, 2.0, 3.0, 4.0]),
+                           Float64[1 2; 3 4; 5 6; 7 8])
+    ScubaR.source_open(tmp)
+    ScubaR.fetch_data(tmp, ["X_g1", "g2"], nothing, nothing, "Float32", false)
+    ScubaR.fetch_data(tmp, ["nope"], nothing, ["c2", "c1"], "Float64", true)
+    ScubaR.fetch_feature(tmp, ["g1"], nothing, nothing, nothing, "Float64")
+    ScubaR.fetch_reduction(tmp, "X_umap", nothing, [1, 2])
+    ScubaR.source_close(tmp)
     reval("if (exists('scuba_pc_tmp')) unlink(scuba_pc_tmp, recursive = TRUE); rm(list = ls(pattern = '^scuba_pc_'))")
     return nothing
 end

@@ -14,6 +14,7 @@ include("conformance.jl")
 include("test_resolve.jl")
 include("test_h5ad.jl")
 include("test_memory.jl")
+include("test_overlay.jl")
 include("test_bpcells.jl")
 include("test_golden.jl")
 
