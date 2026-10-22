@@ -1,6 +1,6 @@
 # SCUBA benchmark summary
 
-Generated 2026-10-22 08:17 MDT from `results.parquet` (841711 rows, 841633 ok).
+Generated 2026-10-22 11:12 MDT from `results.parquet` (841711 rows, 841633 ok).
 
 ## Interpretation
 
@@ -57,10 +57,16 @@ R engine and Julia engine) and raw library baselines on synthetic datasets of 10
 - **R bridge overheads removed (2026-10-22, evening).** Cell names no longer cross the JuliaCall
   bridge in either direction (R already holds them), and expression columns are written by Julia
   straight into R double vectors instead of being built in Julia and copied. One gene over 1M
-  cells from R: file-backed h5ad 242 ms → 35 ms, row-major Seurat 110 ms → 18 ms. 1000 genes:
-  h5ad 4.1 s → 0.9 s warm (first call after start-up ~6 s while 8 GB of fresh R memory is
-  touched), Seurat 4.7 s → 2.0 s. Process peak for the 1000-gene fetch: Seurat 18.6 GB → 12.0 GB,
-  h5ad 10.6 GB, against the 8 GB result itself. `options(SCUBA.julia_eltype)` is therefore a no-op.
+  cells from R: file-backed h5ad 245 ms → 26 ms, row-major Seurat 110 ms → 16 ms (bench medians).
+  1000 genes: h5ad 4.1 s → 2.9 s and Seurat 4.7 s → 2.7 s in the harness, where every repetition
+  allocates and touches 8 GB of fresh R memory; a warm R session that reuses that memory does the
+  h5ad fetch in 0.9 s. Process peak for the 1000-gene fetch: Seurat 18.6 GB → 12.0 GB, h5ad
+  10.6 GB, against the 8 GB result itself. `options(SCUBA.julia_eltype)` is therefore a no-op.
+- **Reduction reads were boxed.** `fetch_reduction` on the 1M h5ad file took 215 ms natively (6 M
+  allocations for 2 × 1M values) because the obsm gather loop indexed a block of unknown element
+  type; a function barrier brings it to ~6 ms (the HDF5 read itself is 0.7 ms), and from R the
+  file-backed `fetch_reduction` drops from 253 ms to 36 ms. Metadata column reads were already
+  fast (2–13 ms at 1M).
 - **Memory.** A 1000-gene × 1M-cell dense result is 8 GB; peak RSS reached 25 GB in Julia and 60 GB
   in R in these runs. SCUBA.jl now fills result columns directly for results above 256 MiB (peak
   ~9 GB for the same query), offers `eltype = Float32` and a sparse `fetch_matrix`, and the size
@@ -147,7 +153,7 @@ on its internal SSD.
 
 | implementation | genes=1 | genes=10 | genes=100 | genes=1000 |
 |---|---|---|---|---|
-| jl_h5ad_csc | 1.2 ms (IQR 1.2 ms–1.3 ms) | 8.1 ms (IQR 7.9 ms–8.3 ms) | 74.9 ms (IQR 73.5 ms–77.6 ms) | 1.0 s (IQR 950.7 ms–1.2 s) |
+| jl_h5ad_csc | 1.3 ms (IQR 1.2 ms–1.3 ms) | 8.5 ms (IQR 8.3 ms–8.7 ms) | 73.0 ms (IQR 72.2 ms–73.5 ms) | 1.0 s (IQR 1.0 s–1.0 s) |
 | jl_h5ad_csr | 3.7 s (IQR 3.2 s–3.7 s) | NA | NA | NA |
 | jl_bpcells | 3.2 s (IQR 3.2 s–3.2 s) | 3.3 s (IQR 3.3 s–3.3 s) | 3.8 s (IQR 3.8 s–3.8 s) | 5.0 s (IQR 4.9 s–5.0 s) |
 | jl_bpcells_rowmajor | 1.9 ms (IQR 1.9 ms–2.0 ms) | 8.2 ms (IQR 7.7 ms–8.3 ms) | 86.7 ms (IQR 86.0 ms–87.3 ms) | 1.7 s (IQR 1.6 s–1.9 s) |
@@ -159,13 +165,13 @@ on its internal SSD.
 | r_seurat_bpcells [julia] | 3.1 s (IQR 3.0 s–3.1 s) | 3.1 s (IQR 3.1 s–3.2 s) | 3.7 s (IQR 3.7 s–3.8 s) | 6.6 s (IQR 6.3 s–6.9 s) |
 | r_seurat_bpcells_rowmajor [julia] | 16.0 ms (IQR 15.0 ms–16.0 ms) | 37.0 ms (IQR 35.5 ms–39.0 ms) | 247.0 ms (IQR 242.5 ms–256.5 ms) | 2.7 s (IQR 2.3 s–2.8 s) |
 | r_sce_backed [julia] | 58.0 ms (IQR 57.0 ms–60.0 ms) | 141.0 ms (IQR 130.0 ms–151.5 ms) | 1.2 s (IQR 1.2 s–1.2 s) | 10.6 s (IQR 10.5 s–11.8 s) |
-| r_h5ad_julia [julia] | 26.0 ms (IQR 25.0 ms–27.5 ms) | 47.0 ms (IQR 44.0 ms–75.5 ms) | 304.0 ms (IQR 250.5 ms–639.0 ms) | 2.9 s (IQR 2.7 s–3.2 s) |
+| r_h5ad_julia [julia] | 27.0 ms (IQR 27.0 ms–27.5 ms) | 47.0 ms (IQR 46.0 ms–51.5 ms) | 645.0 ms (IQR 594.5 ms–661.5 ms) | 2.9 s (IQR 2.8 s–3.0 s) |
 
 ## 1M cells: metadata, reductions, cells (median)
 
 | implementation | fetch_cells:batch:b3 | fetch_cells:cell_type:T_cell | metadata:cell_type | metadata:full | metadata:nCount_RNA | reduction:X_pca|1-2 | reduction:X_pca|1-50 | reduction:X_umap|1-2 | unique_values:cell_type | unique_values:sample |
 |---|---|---|---|---|---|---|---|---|---|---|
-| jl_h5ad_csc | 140.6 ms | 143.1 ms | 59.9 ms | 441.2 ms | 1.3 ms | 196.6 ms | 4.8 s | 179.1 ms | 12.7 ms | 11.9 ms |
+| jl_h5ad_csc | 128.0 ms | 130.5 ms | 55.5 ms | 368.4 ms | 1.3 ms | 17.2 ms | 254.8 ms | 2.5 ms | 12.5 ms | 11.6 ms |
 | jl_h5ad_csr | 125.0 ms | 138.5 ms | 60.3 ms | 411.8 ms | 1.5 ms | 198.2 ms | 4.8 s | 182.4 ms | 12.8 ms | 12.1 ms |
 | jl_bpcells | 136.0 ms | 149.3 ms | 44.5 ms | 16.1 ms | 1.2 ms | 2.4 ms | 33.6 ms | 2.4 ms | 0.1 ms | 0.1 ms |
 | jl_bpcells_rowmajor | 132.8 ms | 142.0 ms | 44.8 ms | 15.6 ms | 1.1 ms | 2.3 ms | 35.2 ms | 2.3 ms | 0.1 ms | 0.1 ms |
@@ -174,7 +180,7 @@ on its internal SSD.
 | r_seurat_bpcells [julia] | 93.0 ms | 146.0 ms | 144.0 ms | 2.0 ms | 33.0 ms | 54.0 ms |  | 59.0 ms | 37.0 ms | 38.0 ms |
 | r_seurat_bpcells_rowmajor [julia] | 90.0 ms | 138.0 ms | 134.0 ms | 2.0 ms | 28.0 ms | 54.0 ms |  | 57.0 ms | 34.0 ms | 34.0 ms |
 | r_sce_backed [julia] | 74.0 ms | 114.0 ms | 148.0 ms | 49.0 ms | 39.0 ms | 142.0 ms |  | 143.0 ms | 39.0 ms | 39.0 ms |
-| r_h5ad_julia [julia] | 55.0 ms | 84.0 ms | 133.0 ms | 77.0 ms | 26.0 ms | 391.0 ms |  | 386.0 ms | 66.0 ms | 65.0 ms |
+| r_h5ad_julia [julia] | 54.0 ms | 82.0 ms | 135.0 ms | 78.0 ms | 27.0 ms | 50.0 ms |  | 38.0 ms | 67.0 ms | 68.0 ms |
 
 ## Startup, open and first-call latency (median)
 
@@ -182,7 +188,7 @@ on its internal SSD.
 |---|---|---|---|---|
 | jl_h5ad_csc | 100k | 96.1 ms | 398.4 ms | 1.1 s |
 | jl_h5ad_csc | 10k | 146.5 ms | 362.5 ms | 1.8 s |
-| jl_h5ad_csc | 1M | 267.8 ms | 706.7 ms | 1.2 s |
+| jl_h5ad_csc | 1M | 140.1 ms | 706.7 ms | 1.2 s |
 | jl_h5ad_csr | 100k | 35.8 ms | 39.4 ms |  |
 | jl_h5ad_csr | 10k | 5.2 ms | 8.8 ms |  |
 | jl_h5ad_csr | 1M | 337.1 ms | 304.7 ms |  |
@@ -212,7 +218,7 @@ on its internal SSD.
 | r_sce_backed [julia] | 1M | 124.0 ms | 2.5 s |  |
 | r_h5ad_julia [julia] | 100k | 13.0 ms | 403.0 ms | 4.7 s |
 | r_h5ad_julia [julia] | 10k | 3.0 ms | 201.0 ms | 4.9 s |
-| r_h5ad_julia [julia] | 1M | 83.0 ms | 3.7 s | 4.7 s |
+| r_h5ad_julia [julia] | 1M | 87.0 ms | 3.8 s | 4.8 s |
 | raw_anndata_py | 100k | 51.1 ms | 780.0 ms | 1.3 s |
 | raw_anndata_py | 10k | 9.4 ms | 545.5 ms | 1.3 s |
 | raw_anndata_py | 1M | 96.9 ms | 3.2 s | 1.6 s |

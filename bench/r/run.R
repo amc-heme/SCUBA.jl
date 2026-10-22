@@ -110,7 +110,7 @@ run_work <- function(impl, obj, w, all_ids) {
   if (w$workload == "reduction") {
     if (impl %in% c("raw_bpcells_r", "raw_bpcells_r_rowmajor", "raw_seurat_fetchdata")) return(NULL)
     p <- strsplit(w$extra, "|", fixed = TRUE)[[1]]; dims <- as.integer(strsplit(p[2], "-")[[1]])
-    df <- fetch_reduction(obj, reduction = k$red[[p[1]]], cells = all_ids, dims = dims[1]:dims[2])
+    df <- fetch_reduction(obj, reduction = k$red[[p[1]]], dims = dims[1]:dims[2])   # all cells, as the Julia harness does
     return(list(chk = feature_checksum(as.data.frame(df)), n = nrow(df), exp = ctx$expected$reduction[[w$extra]]))
   }
   if (w$workload == "fetch_cells") {
