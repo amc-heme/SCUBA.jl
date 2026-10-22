@@ -55,7 +55,8 @@ A dense result of 1000 genes × 1M cells is 8 GB of `Float64`. Three options kee
 tractable, and the size guard (`SCUBA.MAX_DENSE_BYTES[]`, warning by default or an error with
 `SCUBA.DENSE_LIMIT_MODE[] = :error`) points at them when a dense request exceeds its limit:
 
-- `eltype = Float32` halves the result (h5ad data is usually single precision anyway).
+- `eltype = Float32` halves the result (h5ad data is usually single precision anyway). (From R the
+  columns are written straight into R double vectors, so the R option `SCUBA.julia_eltype` has no effect.)
 - `sparse = true` on `fetch_data`, `fetch_feature` and `fetch_matrix` returns expression values
   as `SparseVector` columns / a `SparseMatrixCSC` holding only the nonzeros (metadata and reduction
   columns stay dense; stored zeros are never structural entries). Sparse results are not subject

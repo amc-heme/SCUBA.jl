@@ -74,7 +74,7 @@ the dense-size guard does not apply; see also [`eachchunk`](@ref) for very wide 
 """
 function fetch_data(src::AbstractSingleCellSource, vars::AbstractVector{<:AbstractString};
                     layer = nothing, cells = nothing, strict::Bool = false, eltype::Type{<:Real} = Float64,
-                    sparse::Bool = false)
+                    sparse::Bool = false, alloc = _columns)
     _check_eltype(src, eltype, sparse)
     res = resolve_vars(src, vars; layer)
     if strict && !isempty(res.missing)
@@ -84,13 +84,20 @@ function fetch_data(src::AbstractSingleCellSource, vars::AbstractVector{<:Abstra
     warnings = copy(res.warnings)
     sparse || _dense_guard!(warnings, eltype, count(rv -> rv.kind == :expression, res.found), length(cell_idx))
     scuba_warn(warnings)
-    return _fetch_resolved(src, res.found, cell_idx, cell_names, eltype, sparse)
+    return _fetch_resolved(src, res.found, cell_idx, cell_names, eltype, sparse; alloc)
 end
 
 function _check_eltype(src, ::Type{T}, sparse::Bool) where {T}
     sparse && !(T <: AbstractFloat) && throw(ArgumentError("sparse results need a floating-point eltype, got $T"))
     check_eltype(src, T)
 end
+
+# Dense per-feature result columns. The default allocator `_columns` lets the backend pick its
+# own column path (`expression_columns`); a custom `alloc(T, ncells, nfeat)` (e.g. the R bridge's
+# in-place R vectors) is filled through `expression!`, so the values are written once, in place.
+_expression_columns(src, mod, lay, fidx, cidx, ::Type{T}, alloc) where {T} =
+    alloc === _columns ? expression_columns(src, mod, lay, fidx, cidx, T) :
+                         expression!(alloc(T, length(cidx), length(fidx)), src, mod, lay, fidx, cidx)
 
 # Size guard for dense results: warn (default) or throw above MAX_DENSE_BYTES.
 function _dense_guard!(warnings, ::Type{T}, nfeat::Int, ncells::Int) where {T}
@@ -110,7 +117,7 @@ end
 # `eachchunk` uses it so those columns are read once rather than once per chunk.
 function _fetch_resolved(src::AbstractSingleCellSource, found::AbstractVector{ResolvedVar}, cell_idx::AbstractVector{Int},
                          cell_names::AbstractVector{<:AbstractString}, eltype::Type, sparse::Bool;
-                         prefetched::Union{Nothing,Dict{Int,AbstractVector}} = nothing)
+                         prefetched::Union{Nothing,Dict{Int,AbstractVector}} = nothing, alloc = _columns)
     columns = Vector{AbstractVector}(undef, length(found))
     expr_groups = OrderedDict{Tuple{String,String},Vector{Int}}()
     red_groups = OrderedDict{String,Vector{Int}}()
@@ -132,13 +139,13 @@ function _fetch_resolved(src::AbstractSingleCellSource, found::AbstractVector{Re
             size(X) == (length(cell_idx), length(fidx)) ||
                 error("backend $(source_name(src)) returned a $(size(X)) sparse block for $(length(cell_idx)) cells × $(length(fidx)) features")
             cols = _sparse_columns(X)
-        elseif sizeof(eltype) * length(fidx) * length(cell_idx) <= COLUMN_PATH_BYTES[]
+        elseif alloc === _columns && sizeof(eltype) * length(fidx) * length(cell_idx) <= COLUMN_PATH_BYTES[]
             M = expression(src, mod, lay, fidx, cell_idx)
             size(M) == (length(cell_idx), length(fidx)) ||
                 error("backend $(source_name(src)) returned a $(size(M)) block for $(length(cell_idx)) cells × $(length(fidx)) features")
             cols = Vector{eltype}[Vector{eltype}(view(M, :, j)) for j in 1:size(M, 2)]
         else
-            cols = expression_columns(src, mod, lay, fidx, cell_idx, eltype)
+            cols = _expression_columns(src, mod, lay, fidx, cell_idx, eltype, alloc)
             length(cols) == length(fidx) && all(c -> length(c) == length(cell_idx), cols) ||
                 error("backend $(source_name(src)) returned $(length(cols)) columns for $(length(fidx)) features × $(length(cell_idx)) cells")
         end
@@ -222,7 +229,7 @@ are not searched.
 """
 function fetch_feature(src::AbstractSingleCellSource, features::AbstractVector{<:AbstractString};
                        modality = nothing, layer = nothing, cells = nothing, eltype::Type{<:Real} = Float64,
-                       sparse::Bool = false)
+                       sparse::Bool = false, alloc = _columns)
     _check_eltype(src, eltype, sparse)
     groups = _resolve_feature_groups(src, features, modality, layer)
     cell_idx, cell_names = resolve_cells(src, cells)
@@ -230,7 +237,7 @@ function fetch_feature(src::AbstractSingleCellSource, features::AbstractVector{<
     resolved = ResolvedVar[]
     for (mod, lay, idx, names) in groups
         cols = sparse ? _sparse_columns(expression_sparse(src, mod, lay, idx, cell_idx, eltype)) :
-                        expression_columns(src, mod, lay, idx, cell_idx, eltype)
+                        _expression_columns(src, mod, lay, idx, cell_idx, eltype, alloc)
         for (j, n) in enumerate(names)
             push!(pairs, n => cols[j]); push!(resolved, ResolvedVar(n, n, :expression, mod, lay, idx[j]))
         end

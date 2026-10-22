@@ -6,11 +6,11 @@
 module SCUBARCallExt
 
 using SCUBA, RCall, DataFrames, CategoricalArrays, SparseArrays, OrderedCollections
-using SCUBA: AbstractSingleCellSource, SourceCache, LazyMatrix, BPCellsMatrix, pull, pull_sparse, pull_columns,
-             gather_features_by_cells, gather_fc_sparse, gather_fc!, _columns, ModalityNotFound, LayerNotFound,
+using SCUBA: AbstractSingleCellSource, SourceCache, LazyMatrix, BPCellsMatrix, pull, pull!, pull_sparse, pull_columns,
+             gather_features_by_cells, gather_fc_sparse, gather_fc!, _columns, _put!, ModalityNotFound, LayerNotFound,
              ReductionNotFound, ReadOnlySource
 import SCUBA: cell_ids, modality_keys, default_modality, default_layer, feature_names, layer_names,
-              expression, expression_columns, expression_sparse, supports_sparse, metadata_names, metadata_column, metadata_table,
+              expression, expression!, expression_columns, expression_sparse, supports_sparse, metadata_names, metadata_column, metadata_table,
               reduction_keys, reduction_ndims, reduction, source_name, set_metadata!, invalidate!,
               canonical_modality, canonical_reduction, reduction_search_names
 
@@ -97,6 +97,32 @@ end
 function _sparse_block_from_r(s::RObject, nf::Int, nc::Int)
     _is_dgc(s) && return gather_fc_sparse(_dgc_to_sparse(s), collect(1:nc), collect(1:nf))
     return sparse(Matrix{Float64}(permutedims(_dense_from_r(s, nf, nc, Float64))))
+end
+# Scatter an R slice (features × cells) into any `_put!` sink straight from R memory: the dgCMatrix
+# slots / dense vector are wrapped with `unsafe_vec`, so no Julia copy of the slice is made.
+function _scatter_from_r!(out, s::RObject, nf::Int, nc::Int)
+    if _is_dgc(s)
+        ri = R"$s@i"; rp = R"$s@p"; rx = R"$s@x"
+        GC.@preserve ri rp rx begin
+            i = RCall.unsafe_vec(ri); p = RCall.unsafe_vec(rp); x = RCall.unsafe_vec(rx)
+            @inbounds for cell in 1:nc, k in (Int(p[cell]) + 1):Int(p[cell + 1])
+                _put!(out, cell, Int(i[k]) + 1, Float64(x[k]))
+            end
+        end
+    elseif s.p isa Ptr{RCall.RealSxp}
+        GC.@preserve s begin
+            v = RCall.unsafe_vec(s)                  # column-major features × cells (or a bare numeric)
+            @inbounds for cell in 1:nc, f in 1:nf
+                _put!(out, cell, f, v[(cell - 1) * nf + f])
+            end
+        end
+    else                                             # integer / logical matrix: convert while copying
+        M = _dense_from_r(s, nf, nc, Float64)
+        @inbounds for cell in 1:nc, f in 1:nf
+            _put!(out, cell, f, M[f, cell])
+        end
+    end
+    return out
 end
 
 # ---------------------------------------------------------------------------
@@ -228,6 +254,14 @@ function expression_columns(s::RSeuratSource, m::AbstractString, layer::Abstract
     f = _rint(collect(fidx)); c = _rint(collect(cidx))
     return _columns_from_r(R"scuba_slice($mat, $f, $c)", length(fidx), length(cidx), T)
 end
+function expression!(out, s::RSeuratSource, m::AbstractString, layer::AbstractString, fidx::AbstractVector{Int}, cidx::AbstractVector{Int})
+    mod = _mod(s, m)
+    nat = get(mod.native, String(layer), nothing)
+    nat === nothing || return pull!(out, nat, fidx, cidx)
+    mat = _layer_obj(s, mod, layer)
+    f = _rint(collect(fidx)); c = _rint(collect(cidx))
+    return _scatter_from_r!(out, R"scuba_slice($mat, $f, $c)", length(fidx), length(cidx))
+end
 supports_sparse(::RSeuratSource, ::AbstractString, ::AbstractString) = true
 function expression_sparse(s::RSeuratSource, m::AbstractString, layer::AbstractString, fidx::AbstractVector{Int}, cidx::AbstractVector{Int})
     mod = _mod(s, m)
@@ -340,6 +374,11 @@ function expression_columns(s::RSCESource, m::AbstractString, layer::AbstractStr
     mat = _assay_obj(s, _mod(s, m), layer)
     f = _rint(collect(fidx)); c = _rint(collect(cidx))
     return _columns_from_r(R"scuba_slice($mat, $f, $c)", length(fidx), length(cidx), T)
+end
+function expression!(out, s::RSCESource, m::AbstractString, layer::AbstractString, fidx::AbstractVector{Int}, cidx::AbstractVector{Int})
+    mat = _assay_obj(s, _mod(s, m), layer)
+    f = _rint(collect(fidx)); c = _rint(collect(cidx))
+    return _scatter_from_r!(out, R"scuba_slice($mat, $f, $c)", length(fidx), length(cidx))
 end
 supports_sparse(::RSCESource, ::AbstractString, ::AbstractString) = true
 function expression_sparse(s::RSCESource, m::AbstractString, layer::AbstractString, fidx::AbstractVector{Int}, cidx::AbstractVector{Int})
@@ -489,9 +528,29 @@ asvec(x::AbstractString) = String[x]
 asvec(x) = x
 
 # Hand a table to R column by column so factors, NA and types survive the JuliaCall conversion.
+# Zero-copy result columns: R numeric vectors allocated here and filled in place through SCUBA's
+# `expression!` sink protocol. `totable` hands the SEXPs to R (JuliaCall passes an RObject by
+# pointer), so a wide result exists once, in R, instead of once in Julia and once in R.
+struct RColumns
+    robjs::IdDict{Vector{Float64},RObject}
+end
+RColumns() = RColumns(IdDict{Vector{Float64},RObject}())
+function (rc::RColumns)(::Type, ncells::Int, nfeat::Int)
+    cols = Vector{Vector{Float64}}(undef, nfeat)
+    for j in 1:nfeat
+        r = RObject(RCall.allocArray(RCall.RealSxp, ncells))
+        v = RCall.unsafe_vec(r)
+        fill!(v, 0.0)                    # R does not zero fresh memory; sparse readers write nonzeros only
+        rc.robjs[v] = r
+        cols[j] = v
+    end
+    return cols
+end
+
 # `cells = false` omits the cell-name vector: R already holds the names (object column names, the
 # caller's `cells`, or the scuba_source metadata) and shipping 1M strings costs ~100 ms per call.
-function totable(df::DataFrame; cells::Bool = true)
+# `robjs` maps columns that already live in R memory (see `RColumns`) to their RObject.
+function totable(df::DataFrame; cells::Bool = true, robjs = nothing)
     cc = S.cell_column(df)
     names_ = String[n for n in names(df) if n != cc]
     columns = Any[]
@@ -504,6 +563,8 @@ function totable(df::DataFrame; cells::Bool = true)
             push!(cat_levels, string.(levels(v)))
             push!(cat_ordered, isordered(v))
             push!(columns, Int[0])
+        elseif robjs !== nothing && v isa Vector{Float64} && haskey(robjs, v)
+            push!(columns, robjs[v])      # already an R vector: passed by pointer, not copied
         else
             push!(columns, v)
         end
@@ -519,11 +580,14 @@ _eltype(s::AbstractString) = s == "Float32" ? Float32 : s == "Float64" ? Float64
     throw(ArgumentError("eltype must be \"Float32\" or \"Float64\", got \"$s\""))
 # `allow_empty`: the R side will append metadata columns itself, so a request whose expression
 # part resolves to nothing returns an empty table plus the not-found message instead of erroring.
+# `eltype` is validated but no longer changes the result: expression columns are written straight
+# into R double vectors (`RColumns`), so there is no Julia-side transient left to shrink.
 function fetch_data(obj, vars, layer, cells, eltype = "Float64", allow_empty = false, return_cells = true)
-    T = _eltype(eltype)
+    _eltype(eltype)
+    rc = RColumns()
     try
-        df, w = run(S.fetch_data, obj, asvec(vars); layer = layer, cells = cells, eltype = T)
-        return (totable(df; cells = return_cells)..., warnings = w)
+        df, w = run(S.fetch_data, obj, asvec(vars); layer = layer, cells = cells, alloc = rc)
+        return (totable(df; cells = return_cells, robjs = rc.robjs)..., warnings = w)
     catch e
         (allow_empty && e isa S.VarsNotFound) || rethrow()
         src = getsrc(obj)
@@ -532,8 +596,10 @@ function fetch_data(obj, vars, layer, cells, eltype = "Float64", allow_empty = f
     end
 end
 function fetch_feature(obj, features, layer, cells, modality = nothing, eltype = "Float64", return_cells = true)
-    df, w = run(S.fetch_feature, obj, asvec(features); modality = modality, layer = layer, cells = cells, eltype = _eltype(eltype))
-    (totable(df; cells = return_cells)..., warnings = w)
+    _eltype(eltype)
+    rc = RColumns()
+    df, w = run(S.fetch_feature, obj, asvec(features); modality = modality, layer = layer, cells = cells, alloc = rc)
+    (totable(df; cells = return_cells, robjs = rc.robjs)..., warnings = w)
 end
 function fetch_metadata(obj, vars, cells, full_table)
     df, w = if full_table
@@ -549,16 +615,17 @@ function fetch_reduction(obj, reduction, cells, dims, return_cells = true)
 end
 # fetch_matrix for R: features × cells (the R convention), as dgCMatrix pieces (0-based i/p, x) or a
 # dense matrix, plus dimnames.
-function fetch_matrix(obj, features, modality, layer, cells, sparse::Bool, eltype = "Float64")
+function fetch_matrix(obj, features, modality, layer, cells, sparse::Bool, eltype = "Float64", return_cells = true)
     (X, cs, fs), w = run(S.fetch_matrix, obj, features === nothing ? nothing : asvec(features);
                          modality = modality, layer = layer, cells = cells, sparse = sparse, eltype = _eltype(eltype))
     if sparse
         Xt = permutedims(X)                                      # features × cells
         return (sparse = true, i = Int32.(S.SparseArrays.rowvals(Xt) .- 1), p = Int32.(Xt.colptr .- 1),
                 x = S.SparseArrays.nonzeros(Xt), dim = Int[size(Xt, 1), size(Xt, 2)],
-                features = collect(String, fs), cells = collect(String, cs), warnings = w)
+                features = collect(String, fs), cells = return_cells ? collect(String, cs) : nothing, warnings = w)
     else
-        return (sparse = false, x = permutedims(X), features = collect(String, fs), cells = collect(String, cs), warnings = w)
+        return (sparse = false, x = permutedims(X), features = collect(String, fs),
+                cells = return_cells ? collect(String, cs) : nothing, warnings = w)
     end
 end
 fetch_cells(obj, meta_var, meta_levels) = run(S.fetch_cells, obj, meta_var, asvec(meta_levels))

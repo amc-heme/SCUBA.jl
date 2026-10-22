@@ -105,16 +105,32 @@ end
         @test "condensed_cell_type" in info.obs.names && length(info.obs.cells) == 250
         @test info.uns_assays == String[]
         @test ScubaR.path_cache_size() == 1
+        # expression columns are R double vectors filled in place (zero-copy sink); `eltype` is accepted
+        # but no longer changes the result
+        rvec(c) = rcopy(Vector{Float64}, c)
+        ref = open_h5ad(h5)
         res = ScubaR.fetch_data(h5, ["X_GAPDH", "protein_CD117-AB"], nothing, nothing, "Float32", false)
         @test res.names == ["X_GAPDH", "protein_CD117-AB"] && res.inputs == res.names
-        @test res.columns[1] isa Vector{Float32} && length(res.columns[1]) == 250
+        @test res.columns[1] isa RObject && length(rvec(res.columns[1])) == 250
+        GC.gc(true)                                   # the RObjects must survive a Julia GC before R reads them
+        @test rvec(res.columns[1]) == fetch_data(ref, ["X_GAPDH"]).X_GAPDH
+        @test rvec(res.columns[2]) == fetch_data(ref, ["protein_CD117-AB"])[!, "protein_CD117-AB"]
         res64 = ScubaR.fetch_data(h5, ["X_GAPDH"], nothing, ["487013_1", "39207_1"], "Float64", false)
-        @test res64.cells == ["487013_1", "39207_1"] && res64.columns[1] isa Vector{Float64}
+        @test res64.cells == ["487013_1", "39207_1"] && res64.columns[1] isa RObject
+        @test rvec(res64.columns[1]) == fetch_data(ref, ["X_GAPDH"]; cells = ["487013_1", "39207_1"]).X_GAPDH
+        ff = ScubaR.fetch_feature(h5, ["GAPDH"], nothing, nothing, nothing, "Float64")
+        @test ff.columns[1] isa RObject && rvec(ff.columns[1]) == fetch_data(ref, ["X_GAPDH"]).X_GAPDH
+        # metadata / reduction columns still travel as Julia vectors
+        red = ScubaR.fetch_reduction(h5, "X_umap", nothing, [1, 2])
+        @test red.columns[1] isa Vector{Float64}
+        close(ref)
         # R keeps the row names itself: `return_cells = false` omits the (potentially 1M-string) cell vector
         nocells = ScubaR.fetch_data(h5, ["X_GAPDH"], nothing, ["487013_1", "39207_1"], "Float64", false, false)
-        @test nocells.cells === nothing && nocells.columns[1] == res64.columns[1]
+        @test nocells.cells === nothing && rvec(nocells.columns[1]) == rvec(res64.columns[1])
         @test ScubaR.fetch_feature(h5, ["GAPDH"], nothing, nothing, nothing, "Float64", false).cells === nothing
         @test ScubaR.fetch_reduction(h5, "X_umap", nothing, [1, 2], false).cells === nothing
+        fm = ScubaR.fetch_matrix(h5, ["GAPDH"], nothing, nothing, nothing, true, "Float64", false)
+        @test fm.cells === nothing && fm.dim == [1, 250]
         @test ScubaR.fetch_data(h5, ["Batch"], nothing, ["39207_1"], "Float64", true, false).cells === nothing
         # metadata is owned by R: a metadata name is not found in Julia; allow_empty yields an empty table
         empty = ScubaR.fetch_data(h5, ["Batch"], nothing, ["39207_1"], "Float64", true)
@@ -124,7 +140,7 @@ end
         ren = ScubaR.fetch_data(h5, ["CD117-AB"], nothing, nothing, "Float64", false)
         @test ren.names == ["protein_CD117-AB"] && ren.inputs == ["CD117-AB"]
         ff = ScubaR.fetch_feature(h5, ["GAPDH"], nothing, nothing, nothing, "Float32")
-        @test ff.names == ["GAPDH"] && ff.columns[1] isa Vector{Float32}
+        @test ff.names == ["GAPDH"] && ff.columns[1] isa RObject      # eltype accepted, result is an R double vector
         @test_throws ArgumentError ScubaR.fetch_data(h5, ["X_GAPDH"], nothing, nothing, "Int64", false)
         @test ScubaR.path_cache_size() == 1
         ScubaR.source_close(h5)
@@ -138,5 +154,25 @@ end
         @test eltype(d32[!, "rna_GAPDH"]) == Float32 && eltype(d32[!, "ab_CD117-AB"]) == Float32
         @test d32[!, "rna_GAPDH"] ≈ Float32.(d64[!, "rna_GAPDH"])
         @test d32[!, "ab_CD117-AB"] ≈ Float32.(d64[!, "ab_CD117-AB"])
+        # expression! scatters straight from R memory (dgCMatrix slots / dense vector) into any sink
+        n = length(SCUBA.all_cells(s)); gi = findfirst(==("GAPDH"), SCUBA.feature_names(s, "RNA"))
+        cidx = collect(1:n); sub = [5, 1, 3]
+        M = SCUBA.expression!(zeros(n, 1), s, "RNA", "data", [gi], cidx)
+        @test vec(M) == d64[!, "rna_GAPDH"]
+        cols = SCUBA.expression!(SCUBA._columns(Float32, 3, 1), s, "RNA", "data", [gi], sub)
+        @test cols[1] == Float32.(d64[sub, "rna_GAPDH"])
+        ai = findfirst(==("CD117-AB"), SCUBA.feature_names(s, "AB"))
+        @test vec(SCUBA.expression!(zeros(n, 1), s, "AB", "data", [ai], cidx)) == d64[!, "ab_CD117-AB"]
+        # the glue on a live object: R-vector columns, no cell vector
+        g = ScubaR.fetch_data(reval("AML_Seurat"), ["rna_GAPDH"], nothing, nothing, "Float64", false, false)
+        @test g.columns[1] isa RObject && g.cells === nothing
+        GC.gc(true)
+        @test rcopy(Vector{Float64}, g.columns[1]) == d64[!, "rna_GAPDH"]
+    end
+    if rcopy(Bool, rcall(:requireNamespace, "SingleCellExperiment", quietly = true)) && isfile(fixture_path("AML_SCE.rda"))
+        reval("load($(repr(fixture_path("AML_SCE.rda"))))")
+        sce = rsource(:AML_SCE)
+        n = length(SCUBA.all_cells(sce)); gi = findfirst(==("GAPDH"), SCUBA.feature_names(sce, "RNA"))
+        @test vec(SCUBA.expression!(zeros(n, 1), sce, "RNA", "logcounts", [gi], collect(1:n))) == fetch_data(sce, ["RNA_GAPDH"]).RNA_GAPDH
     end
 end
