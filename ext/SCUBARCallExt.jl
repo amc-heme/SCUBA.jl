@@ -334,26 +334,35 @@ module ScubaR
 # JuliaCall entry points used by the R package (R/engine.R calls Main.ScubaR.<fn>). Living here
 # rather than in an R string means the glue is precompiled with the extension.
 using SCUBA, RCall, DataFrames, CategoricalArrays
+using OrderedCollections: OrderedDict
 
 const S = SCUBA
 
 # Cache of wrapped sources keyed by the R object pointer. Holding the RObject keeps the SEXP
 # alive (RCall preserves it), so an address cannot be reused by a different object while cached.
 # R copies on modify, so a modified object arrives with a new address and gets a fresh source.
-const SRC_CACHE = Dict{Ptr{Cvoid}, Tuple{Any, Any}}()
-const SRC_CACHE_MAX = 4
+# Least-recently-used: a Shiny app serving several datasets switches between them, and
+# update_object_metadata() produces new addresses, so the oldest entry is evicted rather than
+# the whole cache. Wrapping costs ~0.1 s at 1M cells (cell names are read once).
+const SRC_CACHE = OrderedDict{Ptr{Cvoid}, Tuple{Any, Any}}()
+const SRC_CACHE_MAX = Ref(16)
+set_cache_max!(n::Integer) = (SRC_CACHE_MAX[] = max(1, Int(n)); nothing)
 function getsrc(obj)
     key = Ptr{Cvoid}(obj.p)
     hit = get(SRC_CACHE, key, nothing)
-    hit === nothing || return hit[2]
-    if length(SRC_CACHE) >= SRC_CACHE_MAX
-        empty!(SRC_CACHE)
+    if hit !== nothing
+        delete!(SRC_CACHE, key); SRC_CACHE[key] = hit     # move to most-recently-used
+        return hit[2]
+    end
+    while length(SRC_CACHE) >= SRC_CACHE_MAX[]
+        delete!(SRC_CACHE, first(keys(SRC_CACHE)))
     end
     src = S.rsource(obj)
     SRC_CACHE[key] = (obj, src)
     return src
 end
 clear_cache() = (empty!(SRC_CACHE); nothing)
+cache_size() = length(SRC_CACHE)
 
 function run(f, obj, args...; kwargs...)
     src = getsrc(obj)
