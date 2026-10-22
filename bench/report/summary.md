@@ -1,6 +1,6 @@
 # SCUBA benchmark summary
 
-Generated 2026-10-21 00:35 MDT from `results.parquet` (843317 rows, 843242 ok).
+Generated 2026-10-22 01:24 MDT from `results.parquet` (845093 rows, 845015 ok).
 
 ## Interpretation
 
@@ -43,6 +43,17 @@ R engine and Julia engine) and raw library baselines on synthetic datasets of 10
   start-up 5.0 s → 3.3 s (JuliaCall's own set-up is ~2 s of that and RCall cannot be compiled into
   the image on Julia 1.13), after which the first call on a real object costs ~0.15 s thanks to a
   warm-up on tiny objects at start-up. For a Shiny app this is a one-time cost in `global.R`.
+- **File-backed h5ad from R (`r_h5ad_julia`).** `SCUBA::open_h5ad()` serves a csc h5ad file to R
+  through the Julia engine without reticulate: one gene over 1M cells costs 245 ms (13 ms at 100k)
+  and 1000 genes 4.1 s; `fetch_matrix(sparse = TRUE)` returns the 1000-gene block as a `dgCMatrix`
+  in 3.1 s. The fixed cost per call is the 1M-element cell-name column crossing JuliaCall into R
+  (the Julia reader itself needs 1.2 ms); metadata, cells and reductions stay in R (81 ms for the
+  full table, 87 ms for `fetch_cells`). This replaces the legacy reticulate path, which could not
+  be measured at all with current R `anndata`.
+- **Sparse and chunked results in Python.** `fetch_matrix(sparse=True)` hands 1000 genes × 1M cells
+  to scipy in 1.0 s versus 3.1 s for the dense pandas frame; `iter_chunks` over the same request
+  (sparse, 256 MiB chunks) takes 10 s because every chunk re-reads the requested csc columns, so
+  chunking is for bounding memory, not for speed, on this layout.
 - **Memory.** A 1000-gene × 1M-cell dense result is 8 GB; peak RSS reached 25 GB in Julia and 60 GB
   in R in these runs. SCUBA.jl now fills result columns directly for results above 256 MiB (peak
   ~9 GB for the same query), offers `eltype = Float32` and a sparse `fetch_matrix`, and the size
@@ -63,7 +74,7 @@ on its internal SSD.
 | jl_bpcells_rowmajor | 0.0 ms (IQR 0.0 ms–0.0 ms) | 0.1 ms (IQR 0.1 ms–0.1 ms) | 1.0 ms (IQR 0.9 ms–1.0 ms) | 10.3 ms (IQR 9.9 ms–10.3 ms) |
 | raw_anndata_py | 8.6 ms (IQR 8.6 ms–8.8 ms) | 8.8 ms (IQR 8.5 ms–8.9 ms) | 13.3 ms (IQR 12.8 ms–13.7 ms) | 44.8 ms (IQR 44.3 ms–45.6 ms) |
 | raw_h5py_py | 0.1 ms (IQR 0.1 ms–0.1 ms) | 1.2 ms (IQR 1.1 ms–1.2 ms) | 9.9 ms (IQR 9.9 ms–10.5 ms) | 100.4 ms (IQR 99.8 ms–105.7 ms) |
-| py_scuba_sc | 2.7 ms (IQR 2.6 ms–2.7 ms) | 4.1 ms (IQR 3.8 ms–4.7 ms) | 24.9 ms (IQR 22.9 ms–33.5 ms) | 254.5 ms (IQR 244.5 ms–267.2 ms) |
+| py_scuba_sc | 0.4 ms (IQR 0.4 ms–0.4 ms) | 1.1 ms (IQR 1.0 ms–1.2 ms) | 14.1 ms (IQR 10.4 ms–17.7 ms) | 155.1 ms (IQR 145.5 ms–194.3 ms) |
 | r_seurat_bpcells [r] | 54.0 ms (IQR 52.5 ms–55.0 ms) | 61.0 ms (IQR 60.0 ms–62.0 ms) | 125.0 ms (IQR 123.5 ms–130.0 ms) | 1.3 s (IQR 1.3 s–1.3 s) |
 | r_seurat_bpcells_rowmajor [r] | 26.0 ms (IQR 25.5 ms–26.0 ms) | 33.0 ms (IQR 32.0 ms–33.0 ms) | 102.0 ms (IQR 99.5 ms–103.5 ms) | 1.4 s (IQR 1.3 s–1.4 s) |
 | r_sce_backed [r] | 35.0 ms (IQR 35.0 ms–37.5 ms) | 38.0 ms (IQR 36.0 ms–38.0 ms) | 57.0 ms (IQR 56.0 ms–57.0 ms) | 542.0 ms (IQR 248.5 ms–571.0 ms) |
@@ -72,6 +83,7 @@ on its internal SSD.
 | r_seurat_bpcells [julia] | 32.0 ms (IQR 30.5 ms–32.0 ms) | 32.0 ms (IQR 32.0 ms–33.0 ms) | 39.0 ms (IQR 38.0 ms–41.0 ms) | 127.0 ms (IQR 110.5 ms–135.0 ms) |
 | r_seurat_bpcells_rowmajor [julia] | 1.0 ms (IQR 1.0 ms–1.0 ms) | 2.0 ms (IQR 1.0 ms–2.0 ms) | 7.0 ms (IQR 6.0 ms–7.0 ms) | 102.0 ms (IQR 79.5 ms–107.5 ms) |
 | r_sce_backed [julia] | 9.0 ms (IQR 9.0 ms–9.0 ms) | 12.0 ms (IQR 12.0 ms–13.0 ms) | 48.0 ms (IQR 45.0 ms–49.0 ms) | 500.0 ms (IQR 481.0 ms–764.5 ms) |
+| r_h5ad_julia [julia] | 1.0 ms (IQR 1.0 ms–2.0 ms) | 2.0 ms (IQR 2.0 ms–3.0 ms) | 14.0 ms (IQR 11.0 ms–17.0 ms) | 160.0 ms (IQR 157.5 ms–163.0 ms) |
 
 ## 10k cells: metadata, reductions, cells (median)
 
@@ -82,13 +94,14 @@ on its internal SSD.
 | jl_bpcells | 1.1 ms | 1.2 ms | 0.4 ms | 0.2 ms | 0.0 ms | 0.0 ms | 0.4 ms | 0.0 ms | 0.0 ms | 0.0 ms |
 | jl_bpcells_rowmajor | 1.4 ms | 1.5 ms | 0.4 ms | 0.2 ms | 0.0 ms | 0.0 ms | 0.4 ms | 0.0 ms | 0.0 ms | 0.0 ms |
 | raw_anndata_py | 9.4 ms | 9.8 ms | 19.4 ms | 0.1 ms | 0.1 ms | 0.1 ms | 0.4 ms | 0.0 ms | 19.9 ms | 19.1 ms |
-| py_scuba_sc | 2.5 ms | 3.6 ms | 23.7 ms | 12.3 ms | 3.3 ms | 5.2 ms | 52.7 ms | 4.9 ms | 0.4 ms | 0.4 ms |
+| py_scuba_sc | 2.3 ms | 3.2 ms | 19.6 ms | 10.2 ms | 0.6 ms | 2.4 ms | 56.8 ms | 2.4 ms | 0.3 ms | 0.3 ms |
 | r_seurat_bpcells [r] | 1.0 ms | 2.0 ms | 2.0 ms | 0.0 ms | 1.0 ms | 1.0 ms |  | 0.0 ms | 1.0 ms | 1.0 ms |
 | r_seurat_bpcells_rowmajor [r] | 1.0 ms | 1.0 ms | 2.0 ms | 0.0 ms | 1.0 ms | 1.0 ms |  | 1.0 ms | 1.0 ms | 1.0 ms |
 | r_sce_backed [r] | 2.0 ms | 2.0 ms | 4.0 ms | 6.0 ms | 3.0 ms | 19.0 ms |  | 19.0 ms | 2.0 ms | 3.0 ms |
 | r_seurat_bpcells [julia] | 2.0 ms | 3.0 ms | 4.0 ms | 14.0 ms | 2.0 ms | 2.0 ms | 14.0 ms | 2.0 ms | 4.0 ms | 4.0 ms |
 | r_seurat_bpcells_rowmajor [julia] | 3.0 ms | 3.0 ms | 4.0 ms | 16.0 ms | 1.0 ms | 2.0 ms | 15.0 ms | 2.0 ms | 4.0 ms | 4.0 ms |
 | r_sce_backed [julia] | 2.0 ms | 3.0 ms | 3.0 ms | 19.0 ms | 2.0 ms | 5.0 ms | 18.0 ms | 5.0 ms | 4.0 ms | 4.0 ms |
+| r_h5ad_julia [julia] | 0.0 ms | 0.0 ms | 2.0 ms | 1.0 ms | 0.0 ms | 4.0 ms |  | 3.0 ms | 1.0 ms | 1.0 ms |
 
 ## 100k cells: feature fetch over all cells, warm (median, IQR)
 
@@ -100,7 +113,7 @@ on its internal SSD.
 | jl_bpcells_rowmajor | 0.2 ms (IQR 0.2 ms–0.3 ms) | 0.8 ms (IQR 0.7 ms–0.8 ms) | 7.6 ms (IQR 7.2 ms–7.9 ms) | 70.9 ms (IQR 69.6 ms–71.8 ms) |
 | raw_anndata_py | 38.2 ms (IQR 37.2 ms–39.3 ms) | 40.6 ms (IQR 37.9 ms–41.2 ms) | 51.1 ms (IQR 47.4 ms–51.6 ms) | 113.5 ms (IQR 110.6 ms–115.5 ms) |
 | raw_h5py_py | 0.1 ms (IQR 0.1 ms–0.2 ms) | 1.2 ms (IQR 1.2 ms–1.2 ms) | 13.6 ms (IQR 12.8 ms–13.7 ms) | 134.5 ms (IQR 132.4 ms–135.3 ms) |
-| py_scuba_sc | 1.2 ms (IQR 1.1 ms–1.2 ms) | 9.5 ms (IQR 4.7 ms–32.9 ms) | 88.4 ms (IQR 47.5 ms–93.7 ms) | 423.1 ms (IQR 368.1 ms–465.3 ms) |
+| py_scuba_sc | 1.3 ms (IQR 1.2 ms–1.3 ms) | 4.9 ms (IQR 4.4 ms–13.2 ms) | 86.4 ms (IQR 41.5 ms–96.5 ms) | 473.3 ms (IQR 447.0 ms–496.6 ms) |
 | r_seurat_bpcells [r] | 523.0 ms (IQR 519.0 ms–529.5 ms) | 595.0 ms (IQR 589.0 ms–616.0 ms) | 1.9 s (IQR 1.6 s–1.9 s) | 7.4 s (IQR 7.3 s–7.6 s) |
 | r_sce_backed [r] | 50.0 ms (IQR 50.0 ms–54.0 ms) | 68.0 ms (IQR 67.0 ms–68.0 ms) | 264.0 ms (IQR 259.0 ms–273.0 ms) | 3.0 s (IQR 2.9 s–3.3 s) |
 | raw_bpcells_r [r] | 328.0 ms (IQR 317.5 ms–330.5 ms) | 328.0 ms (IQR 324.5 ms–333.0 ms) | 414.0 ms (IQR 409.5 ms–425.5 ms) | 781.0 ms (IQR 771.0 ms–1.1 s) |
@@ -108,6 +121,7 @@ on its internal SSD.
 | r_seurat_bpcells [julia] | 316.0 ms (IQR 313.5 ms–319.0 ms) | 322.0 ms (IQR 319.0 ms–324.5 ms) | 432.0 ms (IQR 428.0 ms–438.5 ms) | 829.0 ms (IQR 773.0 ms–1.1 s) |
 | r_seurat_bpcells_rowmajor [julia] | 6.0 ms (IQR 6.0 ms–6.0 ms) | 10.0 ms (IQR 10.0 ms–10.0 ms) | 87.0 ms (IQR 51.0 ms–96.5 ms) | 462.0 ms (IQR 385.5 ms–809.5 ms) |
 | r_sce_backed [julia] | 19.0 ms (IQR 18.5 ms–25.0 ms) | 58.0 ms (IQR 57.0 ms–63.5 ms) | 485.0 ms (IQR 459.0 ms–501.0 ms) | 4.4 s (IQR 4.4 s–4.5 s) |
+| r_h5ad_julia [julia] | 13.0 ms (IQR 12.5 ms–14.5 ms) | 18.0 ms (IQR 17.5 ms–22.0 ms) | 107.0 ms (IQR 65.5 ms–109.0 ms) | 784.0 ms (IQR 621.5 ms–1.0 s) |
 
 ## 100k cells: metadata, reductions, cells (median)
 
@@ -118,12 +132,13 @@ on its internal SSD.
 | jl_bpcells | 11.3 ms | 12.2 ms | 4.2 ms | 1.4 ms | 0.1 ms | 0.2 ms | 3.6 ms | 0.2 ms | 0.0 ms | 0.0 ms |
 | jl_bpcells_rowmajor | 12.8 ms | 13.8 ms | 4.5 ms | 1.5 ms | 0.1 ms | 0.2 ms | 3.8 ms | 0.2 ms | 0.0 ms | 0.0 ms |
 | raw_anndata_py | 98.6 ms | 103.8 ms | 200.5 ms | 0.1 ms | 0.1 ms | 0.7 ms | 1.8 ms | 0.2 ms | 192.1 ms | 185.0 ms |
-| py_scuba_sc | 24.3 ms | 33.2 ms | 197.9 ms | 59.9 ms | 1.6 ms | 20.2 ms | 559.6 ms | 18.6 ms | 1.5 ms | 1.5 ms |
+| py_scuba_sc | 25.0 ms | 30.5 ms | 193.8 ms | 62.8 ms | 1.4 ms | 19.5 ms | 531.8 ms | 18.6 ms | 1.5 ms | 1.4 ms |
 | r_seurat_bpcells [r] | 7.0 ms | 12.0 ms | 16.0 ms | 0.0 ms | 3.0 ms | 6.0 ms |  | 5.0 ms | 3.0 ms | 3.0 ms |
 | r_sce_backed [r] | 5.0 ms | 8.0 ms | 16.0 ms | 8.0 ms | 4.0 ms | 25.0 ms |  | 25.0 ms | 5.0 ms | 5.0 ms |
 | r_seurat_bpcells [julia] | 19.0 ms | 21.0 ms | 26.0 ms | 188.0 ms | 8.0 ms | 16.0 ms | 198.0 ms | 16.0 ms | 25.0 ms | 25.0 ms |
 | r_seurat_bpcells_rowmajor [julia] | 6.0 ms | 10.0 ms | 14.0 ms | 0.0 ms | 3.0 ms | 4.0 ms |  | 4.0 ms | 3.0 ms | 3.0 ms |
 | r_sce_backed [julia] | 20.0 ms | 23.0 ms | 27.0 ms | 149.0 ms | 8.0 ms | 21.0 ms | 215.0 ms | 22.0 ms | 26.0 ms | 27.0 ms |
+| r_h5ad_julia [julia] | 4.0 ms | 7.0 ms | 12.0 ms | 7.0 ms | 2.0 ms | 39.0 ms |  | 38.0 ms | 6.0 ms | 5.0 ms |
 
 ## 1M cells: feature fetch over all cells, warm (median, IQR)
 
@@ -135,7 +150,7 @@ on its internal SSD.
 | jl_bpcells_rowmajor | 1.9 ms (IQR 1.9 ms–2.0 ms) | 8.2 ms (IQR 7.7 ms–8.3 ms) | 86.7 ms (IQR 86.0 ms–87.3 ms) | 1.7 s (IQR 1.6 s–1.9 s) |
 | raw_anndata_py | 497.4 ms (IQR 479.4 ms–500.7 ms) | 464.3 ms (IQR 459.3 ms–479.7 ms) | 504.2 ms (IQR 502.0 ms–519.1 ms) | 809.3 ms (IQR 807.3 ms–815.9 ms) |
 | raw_h5py_py | 0.1 ms (IQR 0.1 ms–0.1 ms) | 0.9 ms (IQR 0.8 ms–1.3 ms) | 13.1 ms (IQR 10.4 ms–14.6 ms) | 127.5 ms (IQR 126.8 ms–127.8 ms) |
-| py_scuba_sc | 7.7 ms (IQR 6.7 ms–16.8 ms) | 96.1 ms (IQR 89.8 ms–101.6 ms) | 426.0 ms (IQR 352.9 ms–482.2 ms) | 3.3 s (IQR 3.1 s–3.5 s) |
+| py_scuba_sc | 8.1 ms (IQR 7.0 ms–18.3 ms) | 93.3 ms (IQR 69.2 ms–102.4 ms) | 412.4 ms (IQR 317.5 ms–457.9 ms) | 3.1 s (IQR 3.0 s–3.3 s) |
 | r_seurat_bpcells [r] | 5.5 s (IQR 5.5 s–5.6 s) | 6.5 s (IQR 6.2 s–6.6 s) | 14.2 s (IQR 14.0 s–14.3 s) | 70.6 s (IQR 69.9 s–73.0 s) |
 | r_seurat_bpcells_rowmajor [r] | 2.3 s (IQR 2.3 s–2.4 s) | 3.4 s (IQR 3.3 s–3.4 s) | 10.7 s (IQR 10.6 s–10.9 s) | 67.5 s (IQR 67.1 s–67.9 s) |
 | r_sce_backed [r] | 254.0 ms (IQR 251.0 ms–256.0 ms) | 438.0 ms (IQR 431.0 ms–450.0 ms) | 3.9 s (IQR 3.8 s–4.1 s) | 39.6 s (IQR 39.4 s–40.1 s) |
@@ -144,6 +159,7 @@ on its internal SSD.
 | r_seurat_bpcells [julia] | 3.3 s (IQR 3.2 s–3.3 s) | 3.4 s (IQR 3.4 s–3.4 s) | 4.1 s (IQR 4.1 s–4.3 s) | 8.0 s (IQR 7.8 s–8.1 s) |
 | r_seurat_bpcells_rowmajor [julia] | 110.0 ms (IQR 107.0 ms–128.5 ms) | 202.0 ms (IQR 146.5 ms–212.0 ms) | 535.0 ms (IQR 436.0 ms–611.5 ms) | 4.7 s (IQR 4.6 s–4.9 s) |
 | r_sce_backed [julia] | 181.0 ms (IQR 178.0 ms–187.0 ms) | 637.0 ms (IQR 628.5 ms–643.0 ms) | 4.5 s (IQR 4.1 s–4.6 s) | 40.6 s (IQR 40.2 s–40.9 s) |
+| r_h5ad_julia [julia] | 245.0 ms (IQR 209.0 ms–256.5 ms) | 306.0 ms (IQR 297.5 ms–318.0 ms) | 667.0 ms (IQR 634.0 ms–712.5 ms) | 4.1 s (IQR 4.0 s–4.5 s) |
 
 ## 1M cells: metadata, reductions, cells (median)
 
@@ -154,13 +170,14 @@ on its internal SSD.
 | jl_bpcells | 136.0 ms | 149.3 ms | 44.5 ms | 16.1 ms | 1.2 ms | 2.4 ms | 33.6 ms | 2.4 ms | 0.1 ms | 0.1 ms |
 | jl_bpcells_rowmajor | 132.8 ms | 142.0 ms | 44.8 ms | 15.6 ms | 1.1 ms | 2.3 ms | 35.2 ms | 2.3 ms | 0.1 ms | 0.1 ms |
 | raw_anndata_py | 55.3 ms | 85.2 ms | 130.3 ms | 0.3 ms | 0.3 ms | 12.4 ms | 44.9 ms | 0.6 ms | 108.9 ms | 78.1 ms |
-| py_scuba_sc | 272.2 ms | 344.4 ms | 149.8 ms | 845.2 ms | 6.9 ms | 296.9 ms | 5.6 s | 279.5 ms | 14.5 ms | 13.7 ms |
+| py_scuba_sc | 214.0 ms | 301.9 ms | 142.9 ms | 732.8 ms | 6.6 ms | 281.8 ms | 5.0 s | 267.9 ms | 13.6 ms | 12.9 ms |
 | r_seurat_bpcells [r] | 85.0 ms | 137.0 ms | 144.0 ms | 2.0 ms | 32.0 ms | 60.0 ms |  | 62.0 ms | 34.0 ms | 34.0 ms |
 | r_seurat_bpcells_rowmajor [r] | 88.0 ms | 133.0 ms | 140.0 ms | 2.0 ms | 28.0 ms | 56.0 ms |  | 53.0 ms | 33.0 ms | 35.0 ms |
 | r_sce_backed [r] | 68.0 ms | 99.0 ms | 140.0 ms | 44.0 ms | 30.0 ms | 123.0 ms |  | 133.0 ms | 33.0 ms | 34.0 ms |
 | r_seurat_bpcells [julia] | 236.0 ms | 291.0 ms | 340.0 ms | 1.8 s | 133.0 ms | 243.0 ms | 1.8 s | 232.0 ms | 401.0 ms | 429.0 ms |
 | r_seurat_bpcells_rowmajor [julia] | 233.0 ms | 279.0 ms | 336.0 ms | 1.7 s | 135.0 ms | 252.0 ms | 1.7 s | 301.0 ms | 401.0 ms | 415.0 ms |
 | r_sce_backed [julia] | 230.0 ms | 291.0 ms | 337.0 ms | 1.8 s | 139.0 ms | 259.0 ms | 1.9 s | 257.0 ms | 412.0 ms | 429.0 ms |
+| r_h5ad_julia [julia] | 57.0 ms | 87.0 ms | 136.0 ms | 81.0 ms | 28.0 ms | 495.0 ms |  | 455.0 ms | 73.0 ms | 72.0 ms |
 
 ## Startup, open and first-call latency (median)
 
@@ -201,15 +218,18 @@ on its internal SSD.
 | r_sce_backed [julia] | 100k | 117.0 ms | 214.0 ms |  |
 | r_sce_backed [julia] | 10k | 47.0 ms | 32.0 ms |  |
 | r_sce_backed [julia] | 1M | 462.0 ms | 2.4 s |  |
+| r_h5ad_julia [julia] | 100k | 14.0 ms | 387.0 ms | 4.8 s |
+| r_h5ad_julia [julia] | 10k | 3.0 ms | 201.0 ms | 4.9 s |
+| r_h5ad_julia [julia] | 1M | 266.0 ms | 3.9 s | 4.9 s |
 | raw_anndata_py | 100k | 51.1 ms | 780.0 ms | 1.3 s |
 | raw_anndata_py | 10k | 9.4 ms | 545.5 ms | 1.3 s |
 | raw_anndata_py | 1M | 96.9 ms | 3.2 s | 1.6 s |
 | raw_h5py_py | 100k | 0.3 ms | 49.9 ms |  |
 | raw_h5py_py | 10k | 0.2 ms | 14.7 ms |  |
 | raw_h5py_py | 1M | 0.2 ms | 403.2 ms |  |
-| py_scuba_sc | 100k | 306.5 ms | 4.2 s | 32.9 ms |
-| py_scuba_sc | 10k | 367.0 ms | 5.4 s | 35.1 ms |
-| py_scuba_sc | 1M | 479.8 ms | 5.1 s | 41.0 ms |
+| py_scuba_sc | 100k | 350.9 ms | 4.2 s | 831.9 ms |
+| py_scuba_sc | 10k | 284.5 ms | 8.8 s | 36.1 ms |
+| py_scuba_sc | 1M | 753.1 ms | 5.1 s | 860.4 ms |
 
 ## Skipped and failed cells
 
@@ -219,6 +239,9 @@ on its internal SSD.
 | r_anndata_backed | r | 100k | skipped | R anndata 0.8.0 returns python-class objects; install remotes::install_version('anndata', '0.7.5.6') |  1 |
 | r_anndata_backed | r | 10k | skipped | R anndata 0.8.0 returns python-class objects; install remotes::install_version('anndata', '0.7.5.6') |  1 |
 | r_anndata_backed | r | 1M | skipped | R anndata 0.8.0 returns python-class objects; install remotes::install_version('anndata', '0.7.5.6') |  1 |
+| r_h5ad_julia | julia | 100k | skipped | legacy fetch_reduction supports exactly two dims |  1 |
+| r_h5ad_julia | julia | 10k | skipped | legacy fetch_reduction supports exactly two dims |  1 |
+| r_h5ad_julia | julia | 1M | skipped | legacy fetch_reduction supports exactly two dims |  1 |
 | r_sce_backed | r | 100k | skipped | legacy fetch_reduction supports exactly two dims |  1 |
 | r_sce_backed | r | 10k | skipped | legacy fetch_reduction supports exactly two dims |  1 |
 | r_sce_backed | r | 1M | skipped | legacy fetch_reduction supports exactly two dims |  1 |

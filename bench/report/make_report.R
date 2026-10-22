@@ -14,18 +14,19 @@ ok <- df %>% filter(status == "ok", !(checksum_ok %in% c(FALSE)))
 scale_cells <- c("10k" = 1e4, "100k" = 1e5, "1M" = 1e6, "3M" = 3e6)
 ok$cells <- scale_cells[ok$scale]
 ok$impl <- ifelse(ok$language == "r", paste0(ok$implementation, " [", ok$engine, "]"), ok$implementation)
-ok$lang <- factor(c(julia = "Julia (SCUBA.jl)", r = "R (SCUBA)", python = "Python")[ok$language], levels = c("Julia (SCUBA.jl)", "R (SCUBA)", "Python"))
+# R rows are split by engine into their own panels (small multiples) so each panel keeps <= 8 series
+LANGS <- c("Julia (SCUBA.jl)", "R, legacy engine", "R, Julia engine", "Python")
+ok$lang <- factor(ifelse(ok$language == "r", ifelse(ok$engine == "julia", LANGS[3], LANGS[2]), c(julia = LANGS[1], python = LANGS[4])[ok$language]), levels = LANGS)
 x_cells <- scale_x_log10(breaks = c(1e4, 1e5, 1e6, 3e6), labels = c("10k", "100k", "1M", "3M"))
 
 # Fixed implementation -> colour slot assignment (reference palette, categorical slots in fixed order per language)
-LANG_LABEL <- c(julia = "Julia (SCUBA.jl)", r = "R (SCUBA)", python = "Python")
 PAL <- c("#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948")
 impl_levels <- c("jl_h5ad_csc", "jl_h5ad_csr", "jl_bpcells", "jl_bpcells_rowmajor", "jl_snapshot",
                  "r_seurat_bpcells [r]", "r_seurat_bpcells_rowmajor [r]", "r_sce_backed [r]", "raw_bpcells_r [r]", "raw_bpcells_r_rowmajor [r]",
-                 "r_seurat_bpcells [julia]", "r_seurat_bpcells_rowmajor [julia]", "r_sce_backed [julia]",
+                 "r_seurat_bpcells [julia]", "r_seurat_bpcells_rowmajor [julia]", "r_sce_backed [julia]", "r_h5ad_julia [julia]",
                  "r_anndata_backed [r]", "r_seurat_inmem [r]", "raw_seurat_fetchdata [r]",
                  "raw_anndata_py", "raw_h5py_py", "py_scuba_sc")
-slot <- c(1, 2, 3, 4, 5,  1, 2, 3, 4, 5,  6, 7, 8,  1, 2, 3,  1, 2, 3)
+slot <- c(1, 2, 3, 4, 5,  1, 2, 3, 4, 5,  1, 2, 3, 4,  6, 7, 8,  1, 2, 3)
 impl_cols <- setNames(PAL[slot], impl_levels)
 present <- intersect(impl_levels, unique(ok$impl)); extra <- setdiff(unique(ok$impl), impl_levels)
 ok$impl <- factor(ok$impl, levels = c(present, extra))
@@ -112,7 +113,7 @@ if (length(conc_files)) {
       d })) %>%
     filter(workload == "all") %>%
     mutate(impl = paste0(implementation, ifelse(language == "r", paste0(" [", engine, "]"), ""), ifelse(mode == "threads", paste0(" threads/", share), "")),
-           lang = factor(c(julia = "Julia (SCUBA.jl)", r = "R (SCUBA)", python = "Python")[language], levels = c("Julia (SCUBA.jl)", "R (SCUBA)", "Python")))
+           lang = factor(ifelse(language == "r", ifelse(engine == "julia", LANGS[3], LANGS[2]), c(julia = LANGS[1], python = LANGS[4])[language]), levels = LANGS))
   conc_cols <- setNames(PAL[((seq_along(unique(cs$impl)) - 1) %% 8) + 1], unique(cs$impl))
   p1 <- ggplot(cs, aes(n, throughput_qps, colour = impl, group = impl)) + geom_line(linewidth = 0.7) + geom_point(size = 2.2) +
     facet_grid(scale ~ lang, scales = "free_y") + scale_y_log10(labels = scales::label_comma()) +

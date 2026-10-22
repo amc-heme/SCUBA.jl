@@ -39,6 +39,17 @@ R engine and Julia engine) and raw library baselines on synthetic datasets of 10
   start-up 5.0 s → 3.3 s (JuliaCall's own set-up is ~2 s of that and RCall cannot be compiled into
   the image on Julia 1.13), after which the first call on a real object costs ~0.15 s thanks to a
   warm-up on tiny objects at start-up. For a Shiny app this is a one-time cost in `global.R`.
+- **File-backed h5ad from R (`r_h5ad_julia`).** `SCUBA::open_h5ad()` serves a csc h5ad file to R
+  through the Julia engine without reticulate: one gene over 1M cells costs 245 ms (13 ms at 100k)
+  and 1000 genes 4.1 s; `fetch_matrix(sparse = TRUE)` returns the 1000-gene block as a `dgCMatrix`
+  in 3.1 s. The fixed cost per call is the 1M-element cell-name column crossing JuliaCall into R
+  (the Julia reader itself needs 1.2 ms); metadata, cells and reductions stay in R (81 ms for the
+  full table, 87 ms for `fetch_cells`). This replaces the legacy reticulate path, which could not
+  be measured at all with current R `anndata`.
+- **Sparse and chunked results in Python.** `fetch_matrix(sparse=True)` hands 1000 genes × 1M cells
+  to scipy in 1.0 s versus 3.1 s for the dense pandas frame; `iter_chunks` over the same request
+  (sparse, 256 MiB chunks) takes 10 s because every chunk re-reads the requested csc columns, so
+  chunking is for bounding memory, not for speed, on this layout.
 - **Memory.** A 1000-gene × 1M-cell dense result is 8 GB; peak RSS reached 25 GB in Julia and 60 GB
   in R in these runs. SCUBA.jl now fills result columns directly for results above 256 MiB (peak
   ~9 GB for the same query), offers `eltype = Float32` and a sparse `fetch_matrix`, and the size
