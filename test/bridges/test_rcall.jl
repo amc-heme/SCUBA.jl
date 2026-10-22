@@ -110,6 +110,12 @@ end
         @test res.columns[1] isa Vector{Float32} && length(res.columns[1]) == 250
         res64 = ScubaR.fetch_data(h5, ["X_GAPDH"], nothing, ["487013_1", "39207_1"], "Float64", false)
         @test res64.cells == ["487013_1", "39207_1"] && res64.columns[1] isa Vector{Float64}
+        # R keeps the row names itself: `return_cells = false` omits the (potentially 1M-string) cell vector
+        nocells = ScubaR.fetch_data(h5, ["X_GAPDH"], nothing, ["487013_1", "39207_1"], "Float64", false, false)
+        @test nocells.cells === nothing && nocells.columns[1] == res64.columns[1]
+        @test ScubaR.fetch_feature(h5, ["GAPDH"], nothing, nothing, nothing, "Float64", false).cells === nothing
+        @test ScubaR.fetch_reduction(h5, "X_umap", nothing, [1, 2], false).cells === nothing
+        @test ScubaR.fetch_data(h5, ["Batch"], nothing, ["39207_1"], "Float64", true, false).cells === nothing
         # metadata is owned by R: a metadata name is not found in Julia; allow_empty yields an empty table
         empty = ScubaR.fetch_data(h5, ["Batch"], nothing, ["39207_1"], "Float64", true)
         @test empty.names == String[] && empty.cells == ["39207_1"] && occursin("Batch", only(empty.warnings))

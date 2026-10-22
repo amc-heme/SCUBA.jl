@@ -489,7 +489,9 @@ asvec(x::AbstractString) = String[x]
 asvec(x) = x
 
 # Hand a table to R column by column so factors, NA and types survive the JuliaCall conversion.
-function totable(df::DataFrame)
+# `cells = false` omits the cell-name vector: R already holds the names (object column names, the
+# caller's `cells`, or the scuba_source metadata) and shipping 1M strings costs ~100 ms per call.
+function totable(df::DataFrame; cells::Bool = true)
     cc = S.cell_column(df)
     names_ = String[n for n in names(df) if n != cc]
     columns = Any[]
@@ -510,28 +512,28 @@ function totable(df::DataFrame)
     # can restore the caller's column order after appending its own metadata columns
     inputs = String[(cm = colmetadata(df, n, S.COLUMN_META_KEY, nothing); cm === nothing ? n : String(cm.input)) for n in names_]
     (names = names_, columns = columns, cat_idx = cat_idx, cat_codes = cat_codes, cat_levels = cat_levels,
-     cat_ordered = cat_ordered, cells = String.(S.cells(df)), inputs = inputs)
+     cat_ordered = cat_ordered, cells = cells ? String.(S.cells(df)) : nothing, inputs = inputs)
 end
 
 _eltype(s::AbstractString) = s == "Float32" ? Float32 : s == "Float64" ? Float64 :
     throw(ArgumentError("eltype must be \"Float32\" or \"Float64\", got \"$s\""))
 # `allow_empty`: the R side will append metadata columns itself, so a request whose expression
 # part resolves to nothing returns an empty table plus the not-found message instead of erroring.
-function fetch_data(obj, vars, layer, cells, eltype = "Float64", allow_empty = false)
+function fetch_data(obj, vars, layer, cells, eltype = "Float64", allow_empty = false, return_cells = true)
     T = _eltype(eltype)
     try
         df, w = run(S.fetch_data, obj, asvec(vars); layer = layer, cells = cells, eltype = T)
-        return (totable(df)..., warnings = w)
+        return (totable(df; cells = return_cells)..., warnings = w)
     catch e
         (allow_empty && e isa S.VarsNotFound) || rethrow()
         src = getsrc(obj)
         ids = cells === nothing ? collect(String, S.all_cells(src)) : collect(String, asvec(cells))
-        return (totable(S.assemble_table(ids, Pair{String,Vector{Float64}}[]))..., warnings = [sprint(showerror, e)])
+        return (totable(S.assemble_table(ids, Pair{String,Vector{Float64}}[]); cells = return_cells)..., warnings = [sprint(showerror, e)])
     end
 end
-function fetch_feature(obj, features, layer, cells, modality = nothing, eltype = "Float64")
+function fetch_feature(obj, features, layer, cells, modality = nothing, eltype = "Float64", return_cells = true)
     df, w = run(S.fetch_feature, obj, asvec(features); modality = modality, layer = layer, cells = cells, eltype = _eltype(eltype))
-    (totable(df)..., warnings = w)
+    (totable(df; cells = return_cells)..., warnings = w)
 end
 function fetch_metadata(obj, vars, cells, full_table)
     df, w = if full_table
@@ -541,9 +543,9 @@ function fetch_metadata(obj, vars, cells, full_table)
     end
     (totable(df)..., warnings = w)
 end
-function fetch_reduction(obj, reduction, cells, dims)
+function fetch_reduction(obj, reduction, cells, dims, return_cells = true)
     df, w = run(S.fetch_reduction, obj, reduction; cells = cells, dims = dims)
-    (totable(df)..., warnings = w)
+    (totable(df; cells = return_cells)..., warnings = w)
 end
 # fetch_matrix for R: features × cells (the R convention), as dgCMatrix pieces (0-based i/p, x) or a
 # dense matrix, plus dimnames.
@@ -686,6 +688,9 @@ function _precompile_workload()
         ScubaR.default_layer(obj); ScubaR.default_reduction(obj); ScubaR.default_reduction_name(obj)
         ScubaR.unique_values(obj, "group"); ScubaR.n_unique(obj, "group")
         ScubaR.fetch_data(obj, feat, nothing, nothing, "Float32", false)
+        ScubaR.fetch_data(obj, feat, nothing, nothing, "Float64", false, false)
+        ScubaR.fetch_feature(obj, ["g1"], nothing, nothing, nothing, "Float64", false)
+        ScubaR.fetch_reduction(obj, red, nothing, [1, 2], false)
         ScubaR.clear_cache()
     end
     # file-backed path (the R package's scuba_source class)
@@ -698,6 +703,8 @@ function _precompile_workload()
     ScubaR.fetch_data(tmp, ["nope"], nothing, ["c2", "c1"], "Float64", true)
     ScubaR.fetch_feature(tmp, ["g1"], nothing, nothing, nothing, "Float64")
     ScubaR.fetch_reduction(tmp, "X_umap", nothing, [1, 2])
+    ScubaR.fetch_data(tmp, ["X_g1"], nothing, nothing, "Float64", false, false)
+    ScubaR.fetch_reduction(tmp, "X_umap", nothing, [1, 2], false)
     ScubaR.source_close(tmp)
     reval("if (exists('scuba_pc_tmp')) unlink(scuba_pc_tmp, recursive = TRUE); rm(list = ls(pattern = '^scuba_pc_'))")
     return nothing
