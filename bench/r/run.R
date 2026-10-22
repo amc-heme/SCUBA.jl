@@ -23,14 +23,15 @@ suppressPackageStartupMessages({ library(SeuratObject); library(SingleCellExperi
 T_LOADED <- Sys.time()
 
 STORAGE <- c(r_seurat_bpcells = "bpcells", r_seurat_bpcells_rowmajor = "bpcells_rowmajor", r_sce_backed = "sce_h5sparse",
-             r_anndata_backed = "h5ad_csc", r_seurat_inmem = "memory", raw_bpcells_r = "bpcells",
+             r_anndata_backed = "h5ad_csc", r_h5ad_julia = "h5ad_csc", r_seurat_inmem = "memory", raw_bpcells_r = "bpcells",
              raw_bpcells_r_rowmajor = "bpcells_rowmajor", raw_seurat_fetchdata = "memory")
 # how each implementation names things
 KEYS <- list(r_seurat_bpcells = list(prefix = "rna_", layers = c(data = "data", counts = "counts"), red = c(X_umap = "umap", X_pca = "pca")),
              r_seurat_bpcells_rowmajor = list(prefix = "rna_", layers = c(data = "data", counts = "counts"), red = c(X_umap = "umap", X_pca = "pca")),
              r_seurat_inmem = list(prefix = "rna_", layers = c(data = "data", counts = "counts"), red = c(X_umap = "umap", X_pca = "pca")),
              r_sce_backed = list(prefix = "RNA_", layers = c(data = "logcounts", counts = "counts"), red = c(X_umap = "UMAP", X_pca = "PCA")),
-             r_anndata_backed = list(prefix = "X_", layers = c(data = NULL, counts = "counts"), red = c(X_umap = "X_umap", X_pca = "X_pca")))
+             r_anndata_backed = list(prefix = "X_", layers = c(data = NULL, counts = "counts"), red = c(X_umap = "X_umap", X_pca = "X_pca")),
+             r_h5ad_julia = list(prefix = "X_", layers = c(data = "X", counts = "counts"), red = c(X_umap = "X_umap", X_pca = "X_pca")))
 
 anndata_ok <- function() requireNamespace("anndata", quietly = TRUE) && packageVersion("anndata") < "0.8.0"
 
@@ -46,6 +47,7 @@ open_object <- function(impl) {
       reticulate::use_condaenv(cfg$suite$conda_env, required = FALSE)
       anndata::read_h5ad(file.path(d, "csc.h5ad"), backed = "r")
     },
+    r_h5ad_julia = SCUBA::open_h5ad(file.path(d, "csc.h5ad")),    # file-backed scuba_source (Julia engine)
     raw_bpcells_r = list(data = open_matrix_dir(file.path(d, "bpcells", "RNA_data")),
                          counts = open_matrix_dir(file.path(d, "bpcells", "RNA_counts"))),
     r_seurat_inmem = , raw_seurat_fetchdata = {
@@ -92,6 +94,10 @@ run_work <- function(impl, obj, w, all_ids) {
     genes <- ctx$selection$gene_sets[[w$gene_set]]
     e <- ctx$expected$feature[[paste("data", w$gene_set, "all", sep = "|")]]
     if (impl %in% c("raw_bpcells_r", "raw_bpcells_r_rowmajor")) { m <- as(obj$data[genes, , drop = FALSE], "dgCMatrix"); return(list(chk = feature_checksum(m), n = ncol(m), exp = e$sum)) }
+    if (ctx$engine == "julia" && exists("fetch_matrix", asNamespace("SCUBA"))) {      # features x cells dgCMatrix straight from Julia
+      m <- SCUBA::fetch_matrix(obj, features = genes, layer = k$layers[["data"]], sparse = TRUE)
+      return(list(chk = feature_checksum(m), n = ncol(m), exp = e$sum))
+    }
     df <- fetch_data(obj, vars = paste0(k$prefix, genes), layer = if (impl == "r_anndata_backed") NULL else k$layers[["data"]])
     return(list(chk = feature_checksum(df), n = nrow(df), exp = e$sum))
   }
@@ -133,6 +139,10 @@ run_impl <- function(impl) {
   storage <- STORAGE[[impl]]
   reps <- cfg$reps; warm <- reps$warm; timeout_ms <- reps$timeout_s * 1000
   rules <- unlist(cfg$skip$rules)
+  if (impl == "r_h5ad_julia" && (ctx$engine != "julia" || !exists("open_h5ad", asNamespace("SCUBA")))) {
+    ctx <<- result_row(ctx, impl, storage, "open", phase = "open", status = "skipped", note = "file-backed scuba_source needs the Julia engine and SCUBA::open_h5ad()")
+    return(invisible())
+  }
   if (impl == "r_anndata_backed" && !anndata_ok()) {
     ctx <<- result_row(ctx, impl, storage, "open", phase = "open", status = "skipped",
                        note = sprintf("R anndata %s returns python-class objects; install remotes::install_version('anndata', '0.7.5.6')",

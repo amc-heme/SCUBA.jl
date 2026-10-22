@@ -108,3 +108,26 @@ end
         close(src)
     end
 end
+
+@testset "H5AD sparse results across encodings and small read blocks" begin
+    for f in ("AML_h5ad.h5ad", "AML_h5ad_csr.h5ad", "AML_h5ad_dense.h5ad")
+        p = fixture_path(f)
+        isfile(p) || continue
+        s = open_h5ad(p)
+        old = SCUBA.MAX_READ_ELEMENTS[]
+        SCUBA.MAX_READ_ELEMENTS[] = 100
+        try
+            Xd, _, _ = fetch_matrix(s, ["GAPDH", "UNG", "MEIS1"])
+            Xs, _, _ = fetch_matrix(s, ["GAPDH", "UNG", "MEIS1"]; sparse = true, eltype = Float32)
+            @test Xs isa SparseMatrixCSC{Float32,Int}
+            @test Matrix(Xs) ≈ Float32.(Xd)
+            @test nnz(Xs) == count(!iszero, Xd)
+            sub = all_cells(s)[[9, 2, 5]]
+            @test Matrix(fetch_matrix(s, ["GAPDH"]; cells = sub, sparse = true)[1]) == fetch_matrix(s, ["GAPDH"]; cells = sub)[1]
+            @test Vector(fetch_data(s, ["X_GAPDH", "Batch"]; sparse = true, cells = sub).X_GAPDH) == vec(fetch_matrix(s, ["GAPDH"]; cells = sub)[1])
+        finally
+            SCUBA.MAX_READ_ELEMENTS[] = old
+            close(s)
+        end
+    end
+end

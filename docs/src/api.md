@@ -6,6 +6,7 @@
 fetch_data
 fetch_feature
 fetch_matrix
+eachchunk
 fetch_metadata
 fetch_reduction
 fetch_cells

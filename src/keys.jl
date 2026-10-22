@@ -21,6 +21,9 @@ function keytable(src::AbstractSingleCellSource)
     for r in reduction_keys(src)
         haskey(t, r) || (t[String(r)] = KeyEntry(:reduction, String(r)))
     end
+    for (a, target) in reduction_aliases(src)      # e.g. MuData: bare "X_umap" -> "rna_X_umap"
+        haskey(t, a) || (t[String(a)] = KeyEntry(:reduction, String(target)))
+    end
     haskey(t, METADATA_KEY) || (t[METADATA_KEY] = KeyEntry(:metadata, METADATA_KEY))
     return t
 end

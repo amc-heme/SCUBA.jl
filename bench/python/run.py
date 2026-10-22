@@ -227,6 +227,17 @@ class ScubaSC:
         df = self.scuba.fetch_data(self.ds, [f"X_{g}" for g in genes], layer=None if layer == "data" else layer, cells=cells)
         return float(df.to_numpy(dtype=np.float64).sum()), df.shape[0]
 
+    def matrix_sparse(self, genes):
+        X, cells, _ = self.scuba.fetch_matrix(self.ds, genes, sparse=True)      # scipy csc, cells x genes
+        return float(X.data.astype(np.float64).sum()), len(cells)
+
+    def chunks(self, genes):
+        total, n = 0.0, 0
+        for df in self.scuba.iter_chunks(self.ds, [f"X_{g}" for g in genes], sparse=True):
+            total += float(sum(df[c].sparse.sp_values.astype(np.float64).sum() for c in df.columns))
+            n += df.shape[0]
+        return total, n
+
     def metadata(self, col):
         if col == "full":
             df = self.scuba.fetch_metadata(self.ds)
@@ -265,6 +276,9 @@ def workloads(ctx):
         for layer in layers:
             for sub in wl["cell_subsets"]:
                 W.append(dict(workload="feature", layer=layer, gene_set=key, n_features=n, cell_subset=sub, extra=""))
+        if n == max(wl["n_features"]):
+            W.append(dict(workload="matrix_sparse", layer="data", gene_set=key, n_features=n, cell_subset="all", extra=""))
+            W.append(dict(workload="chunks", layer="data", gene_set=key, n_features=n, cell_subset="all", extra=""))
     for m in wl["metadata"]:
         W.append(dict(workload="metadata", layer="", gene_set="", n_features=0, cell_subset="all", extra=m))
     for r in wl["reductions"]:
@@ -278,7 +292,7 @@ def workloads(ctx):
 
 def parse_single(spec):
     p = spec.split("|")
-    if p[0] in ("feature", "matrix_sparse"):
+    if p[0] in ("feature", "matrix_sparse", "chunks"):
         return dict(workload=p[0], layer=p[1], gene_set=p[2], n_features=int(p[2].split(":")[0]), cell_subset=p[3], extra="")
     if p[0] in ("metadata", "reduction"):
         return dict(workload=p[0], layer="", gene_set="", n_features=0, cell_subset="all", extra="|".join(p[1:]))
@@ -304,6 +318,11 @@ def run_work(ctx, impl_obj, w, all_ids):
         return chk, n, (e or {}).get("sum")
     if not hasattr(impl_obj, k):
         return None
+    if k in ("matrix_sparse", "chunks"):
+        genes = ctx.selection["gene_sets"][w["gene_set"]]
+        chk, n = getattr(impl_obj, k)(genes)
+        e = ctx.expected["feature"].get(f"data|{w['gene_set']}|all")
+        return chk, n, (e or {}).get("sum")
     if k == "metadata":
         chk, n = impl_obj.metadata(w["extra"]); return chk, n, ctx.expected["metadata"][w["extra"]]
     if k == "reduction":
@@ -317,7 +336,7 @@ def run_work(ctx, impl_obj, w, all_ids):
 
 
 def label(w):
-    return w["workload"] if w["workload"] in ("feature", "matrix_sparse") else f"{w['workload']}:{w['extra']}"
+    return w["workload"] if w["workload"] in ("feature", "matrix_sparse", "chunks") else f"{w['workload']}:{w['extra']}"
 
 
 def gene_set_index(w):

@@ -5,6 +5,70 @@
 @inline _put!(cols::Vector{<:AbstractVector}, i::Int, j::Int, v) = (@inbounds cols[j][i] = v; nothing)
 _columns(::Type{T}, ncells::Int, nfeat::Int) where {T} = Vector{T}[zeros(T, ncells) for _ in 1:nfeat]
 
+"""
+    SparseSink(T, nfeat)
+
+Sparse output sink: one `(I, V)` buffer per feature column, filled through `_put!`. Explicit
+zeros are dropped, so dense-backed layers yield genuinely sparse results and sparse and dense
+results agree on values. Convert with [`to_sparse_matrix`](@ref) / [`to_sparse_columns`](@ref).
+"""
+struct SparseSink{T}
+    I::Vector{Vector{Int}}
+    V::Vector{Vector{T}}
+end
+SparseSink(::Type{T}, nfeat::Int) where {T} = SparseSink{T}([Int[] for _ in 1:nfeat], [T[] for _ in 1:nfeat])
+@inline function _put!(s::SparseSink, i::Int, j::Int, v)
+    iszero(v) && return nothing
+    @inbounds (push!(s.I[j], i); push!(s.V[j], v))
+    return nothing
+end
+# cell positions arrive in file order, i.e. already sorted unless `cells` was reordered
+function _sorted_column(I::Vector{Int}, V::Vector{T}) where {T}
+    issorted(I) && return I, V
+    p = sortperm(I)
+    return I[p], V[p]
+end
+"""`to_sparse_matrix(sink, ncells)` — cells × features `SparseMatrixCSC`."""
+function to_sparse_matrix(s::SparseSink{T}, ncells::Int) where {T}
+    nf = length(s.I)
+    colptr = Vector{Int}(undef, nf + 1)
+    colptr[1] = 1
+    @inbounds for j in 1:nf
+        colptr[j + 1] = colptr[j] + length(s.I[j])
+    end
+    nnz = colptr[end] - 1
+    rowval = Vector{Int}(undef, nnz); nzval = Vector{T}(undef, nnz)
+    @inbounds for j in 1:nf
+        I, V = _sorted_column(s.I[j], s.V[j])
+        isempty(I) && continue
+        copyto!(rowval, colptr[j], I, 1, length(I))
+        copyto!(nzval, colptr[j], V, 1, length(V))
+    end
+    return SparseMatrixCSC{T,Int}(ncells, nf, colptr, rowval, nzval)
+end
+"""`to_sparse_columns(sink, ncells)` — one `SparseVector` per feature."""
+function _sparse_column(s::SparseSink{T}, j::Int, ncells::Int) where {T}
+    I, V = _sorted_column(s.I[j], s.V[j])
+    return SparseVector(ncells, I, V)
+end
+to_sparse_columns(s::SparseSink{T}, ncells::Int) where {T} = SparseVector{T,Int}[_sparse_column(s, j, ncells) for j in eachindex(s.I)]
+"""Split a cells × features `SparseMatrixCSC` into its `SparseVector` columns (no copy of values per column beyond the slice)."""
+_sparse_columns(X::SparseMatrixCSC{T}) where {T} = SparseVector{T,Int}[X[:, j] for j in 1:size(X, 2)]
+"""Inverse of `_sparse_columns`: `SparseVector` columns -> `SparseMatrixCSC`."""
+_hcat_sparse(cols::AbstractVector{<:SparseVector}) = isempty(cols) ? spzeros(0, 0) : reduce(hcat, cols)
+
+"""
+    RowMapSink(inner, rows)
+
+Sink adaptor mapping the row (cell) position `i` of the writer to `rows[i]` in `inner`; used when
+a modality holds only a subset of the cells (MuData).
+"""
+struct RowMapSink{S}
+    inner::S
+    rows::Vector{Int}
+end
+@inline _put!(s::RowMapSink, i::Int, j::Int, v) = _put!(s.inner, s.rows[i], j, v)
+
 """`position_lookup(n, idx)` — vector `pos` with `pos[idx[k]] = k` and 0 elsewhere."""
 function position_lookup(n::Integer, idx::AbstractVector{Int})
     pos = zeros(Int, n)
@@ -69,35 +133,13 @@ end
 gather_fc(A::SparseMatrixCSC, cell_idx::AbstractVector{Int}, feature_idx::AbstractVector{Int}) =
     gather_fc!(zeros(Float64, length(cell_idx), length(feature_idx)), A, cell_idx, feature_idx)
 
-"""Sparse block (cells × features) from a cells × features sparse matrix."""
-function gather_cf_sparse(A::SparseMatrixCSC, cell_idx::AbstractVector{Int}, feature_idx::AbstractVector{Int})
-    pos = position_lookup(size(A, 1), cell_idx)
-    rows = rowvals(A); vals = nonzeros(A)
-    I = Int[]; J = Int[]; V = Float64[]
-    @inbounds for (j, f) in enumerate(feature_idx)
-        for k in nzrange(A, f)
-            p = pos[rows[k]]
-            p == 0 && continue
-            push!(I, p); push!(J, j); push!(V, vals[k])
-        end
-    end
-    return sparse(I, J, V, length(cell_idx), length(feature_idx))
-end
+"""Sparse block (cells × features, values of type `T`) from a cells × features sparse matrix."""
+gather_cf_sparse(A::SparseMatrixCSC, cell_idx::AbstractVector{Int}, feature_idx::AbstractVector{Int}, ::Type{T} = Float64) where {T} =
+    to_sparse_matrix(gather_cf!(SparseSink(T, length(feature_idx)), A, cell_idx, feature_idx), length(cell_idx))
 
-"""Sparse block (cells × features) from a features × cells sparse matrix."""
-function gather_fc_sparse(A::SparseMatrixCSC, cell_idx::AbstractVector{Int}, feature_idx::AbstractVector{Int})
-    pos = position_lookup(size(A, 1), feature_idx)
-    rows = rowvals(A); vals = nonzeros(A)
-    I = Int[]; J = Int[]; V = Float64[]
-    @inbounds for (i, c) in enumerate(cell_idx)
-        for k in nzrange(A, c)
-            p = pos[rows[k]]
-            p == 0 && continue
-            push!(I, i); push!(J, p); push!(V, vals[k])
-        end
-    end
-    return sparse(I, J, V, length(cell_idx), length(feature_idx))
-end
+"""Sparse block (cells × features, values of type `T`) from a features × cells sparse matrix."""
+gather_fc_sparse(A::SparseMatrixCSC, cell_idx::AbstractVector{Int}, feature_idx::AbstractVector{Int}, ::Type{T} = Float64) where {T} =
+    to_sparse_matrix(gather_fc!(SparseSink(T, length(feature_idx)), A, cell_idx, feature_idx), length(cell_idx))
 
 """Dense block from any cells × features matrix."""
 gather_dense(A::AbstractMatrix, cell_idx::AbstractVector{Int}, feature_idx::AbstractVector{Int}) =

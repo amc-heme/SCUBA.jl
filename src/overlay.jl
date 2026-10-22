@@ -37,11 +37,17 @@ expression_columns(o::MetadataOverlay, m::AbstractString, l::AbstractString, fid
 supports_sparse(o::MetadataOverlay, m::AbstractString, l::AbstractString) = supports_sparse(o.inner, m, l)
 expression_sparse(o::MetadataOverlay, m::AbstractString, l::AbstractString, fidx::AbstractVector{Int}, cidx::AbstractVector{Int}) =
     expression_sparse(o.inner, m, l, fidx, cidx)
+expression_sparse(o::MetadataOverlay, m::AbstractString, l::AbstractString, fidx::AbstractVector{Int}, cidx::AbstractVector{Int}, ::Type{T}) where {T} =
+    expression_sparse(o.inner, m, l, fidx, cidx, T)
+expression!(out, o::MetadataOverlay, m::AbstractString, l::AbstractString, fidx::AbstractVector{Int}, cidx::AbstractVector{Int}) =
+    expression!(out, o.inner, m, l, fidx, cidx)
 reduction_keys(o::MetadataOverlay) = reduction_keys(o.inner)
 reduction_ndims(o::MetadataOverlay, k::AbstractString) = reduction_ndims(o.inner, k)
 reduction(o::MetadataOverlay, k::AbstractString, dims::AbstractVector{Int}, cidx::AbstractVector{Int}) = reduction(o.inner, k, dims, cidx)
 reduction_dimnames_impl(o::MetadataOverlay, k::AbstractString, dims::AbstractVector{Int}) = reduction_dimnames_impl(o.inner, k, dims)
 reduction_search_names(o::MetadataOverlay, k::AbstractString) = reduction_search_names(o.inner, k)
+reduction_aliases(o::MetadataOverlay) = reduction_aliases(o.inner)
+check_eltype(o::MetadataOverlay, ::Type{T}) where {T} = check_eltype(o.inner, T)
 canonical_modality(o::MetadataOverlay, name::AbstractString) = canonical_modality(o.inner, name)
 canonical_reduction(o::MetadataOverlay, name::AbstractString) = canonical_reduction(o.inner, name)
 cache(o::MetadataOverlay) = cache(o.inner)

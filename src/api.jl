@@ -68,44 +68,71 @@ per found variable, in input order.
 `layer` selects the matrix within each modality (default: [`default_layer`](@ref)). `cells`
 subsets and orders the rows. With `strict=false` (default) missing variables produce a
 warning; with `strict=true` they raise `VarsNotFound`. `eltype` is the element type of the
-expression columns (`Float64` default; `Float32` halves the memory of large results).
+expression columns (`Float64` default; `Float32` halves the memory of large results). With
+`sparse=true` expression columns are `SparseVector`s (metadata and reductions stay dense) and
+the dense-size guard does not apply; see also [`eachchunk`](@ref) for very wide results.
 """
 function fetch_data(src::AbstractSingleCellSource, vars::AbstractVector{<:AbstractString};
-                    layer = nothing, cells = nothing, strict::Bool = false, eltype::Type{<:Real} = Float64)
+                    layer = nothing, cells = nothing, strict::Bool = false, eltype::Type{<:Real} = Float64,
+                    sparse::Bool = false)
+    _check_eltype(src, eltype, sparse)
     res = resolve_vars(src, vars; layer)
     if strict && !isempty(res.missing)
         throw(VarsNotFound(res.missing, length(vars), case_suggestions(src, res.missing)))
     end
     cell_idx, cell_names = resolve_cells(src, cells)
-    found = res.found
-    columns = Vector{AbstractVector}(undef, length(found))
+    warnings = copy(res.warnings)
+    sparse || _dense_guard!(warnings, eltype, count(rv -> rv.kind == :expression, res.found), length(cell_idx))
+    scuba_warn(warnings)
+    return _fetch_resolved(src, res.found, cell_idx, cell_names, eltype, sparse)
+end
 
+function _check_eltype(src, ::Type{T}, sparse::Bool) where {T}
+    sparse && !(T <: AbstractFloat) && throw(ArgumentError("sparse results need a floating-point eltype, got $T"))
+    check_eltype(src, T)
+end
+
+# Size guard for dense results: warn (default) or throw above MAX_DENSE_BYTES.
+function _dense_guard!(warnings, ::Type{T}, nfeat::Int, ncells::Int) where {T}
+    est = sizeof(T) * nfeat * ncells
+    if est > MAX_DENSE_BYTES[]
+        DENSE_LIMIT_MODE[] == :error && throw(ResultTooLarge(est, MAX_DENSE_BYTES[], nfeat, ncells))
+        push!(warnings, SCUBAWarning(:large_result,
+            "The requested result is large (~$(round(est / 2^30; digits = 1)) GiB dense for $nfeat features × " *
+            "$ncells cells). Consider fetch_matrix(...; sparse=true), fetch_data(...; sparse=true), eachchunk, " *
+            "eltype = Float32, or fewer features."))
+    end
+    return warnings
+end
+
+# Build the result table for already-resolved variables over `cell_idx`. `prefetched` optionally
+# supplies metadata / reduction columns (by position in `found`) already restricted to `cell_idx`;
+# `eachchunk` uses it so those columns are read once rather than once per chunk.
+function _fetch_resolved(src::AbstractSingleCellSource, found::AbstractVector{ResolvedVar}, cell_idx::AbstractVector{Int},
+                         cell_names::AbstractVector{<:AbstractString}, eltype::Type, sparse::Bool;
+                         prefetched::Union{Nothing,Dict{Int,AbstractVector}} = nothing)
+    columns = Vector{AbstractVector}(undef, length(found))
     expr_groups = OrderedDict{Tuple{String,String},Vector{Int}}()
     red_groups = OrderedDict{String,Vector{Int}}()
-    nexpr = 0
     for (p, rv) in enumerate(found)
-        if rv.kind == :expression
+        if prefetched !== nothing && haskey(prefetched, p)
+            columns[p] = prefetched[p]
+        elseif rv.kind == :expression
             push!(get!(expr_groups, (rv.target, rv.layer::String), Int[]), p)
-            nexpr += 1
         elseif rv.kind == :reduction
             push!(get!(red_groups, rv.target, Int[]), p)
         else
             columns[p] = metadata_column(src, rv.target, cell_idx)
         end
     end
-
-    warnings = copy(res.warnings)
-    est = sizeof(eltype) * nexpr * length(cell_idx)
-    if est > MAX_DENSE_BYTES[]
-        DENSE_LIMIT_MODE[] == :error && throw(ResultTooLarge(est, MAX_DENSE_BYTES[], nexpr, length(cell_idx)))
-        push!(warnings, SCUBAWarning(:large_result,
-            "The requested result is large (~$(round(est / 2^30; digits = 1)) GiB dense for $nexpr features × " *
-            "$(length(cell_idx)) cells). Consider fetch_matrix(...; sparse=true), eltype = Float32, or fewer features."))
-    end
-
     for ((mod, lay), ps) in expr_groups
         fidx = [found[p].index for p in ps]
-        if sizeof(eltype) * length(fidx) * length(cell_idx) <= COLUMN_PATH_BYTES[]
+        if sparse
+            X = expression_sparse(src, mod, lay, fidx, cell_idx, eltype)
+            size(X) == (length(cell_idx), length(fidx)) ||
+                error("backend $(source_name(src)) returned a $(size(X)) sparse block for $(length(cell_idx)) cells × $(length(fidx)) features")
+            cols = _sparse_columns(X)
+        elseif sizeof(eltype) * length(fidx) * length(cell_idx) <= COLUMN_PATH_BYTES[]
             M = expression(src, mod, lay, fidx, cell_idx)
             size(M) == (length(cell_idx), length(fidx)) ||
                 error("backend $(source_name(src)) returned a $(size(M)) block for $(length(cell_idx)) cells × $(length(fidx)) features")
@@ -126,8 +153,6 @@ function fetch_data(src::AbstractSingleCellSource, vars::AbstractVector{<:Abstra
             columns[p] = M[:, j]
         end
     end
-
-    scuba_warn(warnings)
     cols = [found[p].output => columns[p] for p in eachindex(found)]
     return assemble_table(cell_names, cols, found)
 end
@@ -196,13 +221,16 @@ several modalities. Columns keep the requested names. Unlike `fetch_data`, metad
 are not searched.
 """
 function fetch_feature(src::AbstractSingleCellSource, features::AbstractVector{<:AbstractString};
-                       modality = nothing, layer = nothing, cells = nothing, eltype::Type{<:Real} = Float64)
+                       modality = nothing, layer = nothing, cells = nothing, eltype::Type{<:Real} = Float64,
+                       sparse::Bool = false)
+    _check_eltype(src, eltype, sparse)
     groups = _resolve_feature_groups(src, features, modality, layer)
     cell_idx, cell_names = resolve_cells(src, cells)
-    pairs = Pair{String,Vector{eltype}}[]
+    pairs = Pair{String,AbstractVector}[]
     resolved = ResolvedVar[]
     for (mod, lay, idx, names) in groups
-        cols = expression_columns(src, mod, lay, idx, cell_idx, eltype)
+        cols = sparse ? _sparse_columns(expression_sparse(src, mod, lay, idx, cell_idx, eltype)) :
+                        expression_columns(src, mod, lay, idx, cell_idx, eltype)
         for (j, n) in enumerate(names)
             push!(pairs, n => cols[j]); push!(resolved, ResolvedVar(n, n, :expression, mod, lay, idx[j]))
         end
@@ -220,12 +248,15 @@ fetch_feature(src::AbstractSingleCellSource, feature::AbstractString; kw...) = f
     fetch_matrix(src, features; modality=nothing, layer=nothing, cells=nothing, sparse=false)
         -> (X, cells, features)
 
-Expression block (cells × features) as a plain `Matrix{Float64}` or, with `sparse=true`, a
-`SparseMatrixCSC`. Intended for statistics-heavy consumers (dot plots, heatmaps).
-`features === nothing` selects every feature of the modality.
+Expression block (cells × features) as a plain `Matrix{eltype}` or, with `sparse=true`, a
+`SparseMatrixCSC{eltype}`. Intended for statistics-heavy consumers (dot plots, heatmaps).
+`features === nothing` selects every feature of the modality. Dense results are subject to the
+`MAX_DENSE_BYTES` guard; sparse results are not.
 """
 function fetch_matrix(src::AbstractSingleCellSource, features = nothing;
-                      modality = nothing, layer = nothing, cells = nothing, sparse::Bool = false)
+                      modality = nothing, layer = nothing, cells = nothing, sparse::Bool = false,
+                      eltype::Type{<:Real} = Float64)
+    _check_eltype(src, eltype, sparse)
     if features === nothing
         mod = modality === nothing ? default_modality(src) : check_modality(src, modality)
         lay = resolve_layer(src, mod, layer)
@@ -235,7 +266,12 @@ function fetch_matrix(src::AbstractSingleCellSource, features = nothing;
         mod, lay, idx, names = _resolve_features(src, features, modality, layer)
     end
     cell_idx, cell_names = resolve_cells(src, cells)
-    X = sparse ? expression_sparse(src, mod, lay, idx, cell_idx) : expression(src, mod, lay, idx, cell_idx)
+    if sparse
+        X = expression_sparse(src, mod, lay, idx, cell_idx, eltype)
+    else
+        scuba_warn(_dense_guard!(SCUBAWarning[], eltype, length(idx), length(cell_idx)))
+        X = _dense_block(src, mod, lay, idx, cell_idx, eltype)
+    end
     return X, cell_names, names
 end
 

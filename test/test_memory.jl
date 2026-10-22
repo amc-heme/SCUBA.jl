@@ -57,6 +57,7 @@ end
     # the cell column shares the source's id vector when all cells are requested
     @test fetch_data(src, ["g2"]).cell === SCUBA.cell_ids(src)
     @test fetch_data(src, ["g2"]; cells = ["c2", "c1"]).cell == ["c2", "c1"]
+    dense_all = fetch_matrix(src, nothing)[1]
     old = SCUBA.MAX_DENSE_BYTES[]
     SCUBA.MAX_DENSE_BYTES[] = 8 * 6 * 2 - 1       # two features × six cells of Float64 is just over
     try
@@ -66,6 +67,14 @@ end
         @test !any(x -> x.code == :large_result, w2)
         SCUBA.DENSE_LIMIT_MODE[] = :error
         @test_throws ResultTooLarge fetch_data(src, ["g2", "g3"])
+        @test_throws ResultTooLarge fetch_matrix(src, ["g2", "g3"])
+        # sparse results and chunked iteration are not subject to the dense guard
+        @test fetch_matrix(src, ["g2", "g3"]; sparse = true)[1] isa SparseMatrixCSC
+        @test fetch_data(src, ["g2", "g3"]; sparse = true).g2 isa SparseVector
+        @test length(collect(eachchunk(src, ["g2", "g3"]; cells_per_chunk = 3))) == 2
+        # stored zeros never become structural entries
+        Xz, _, _ = fetch_matrix(src, nothing; sparse = true)
+        @test nnz(Xz) == count(!iszero, dense_all) && Matrix(Xz) == dense_all
         @test fetch_data(src, ["g2"]).g2 == [i + 20 for i in 1:6]
     finally
         SCUBA.MAX_DENSE_BYTES[] = old

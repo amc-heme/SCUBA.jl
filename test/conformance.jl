@@ -63,6 +63,35 @@ function test_source_conformance(src; main_feature, alt_modality, alt_feature, r
         @test vec(X) == df[!, keyed_main]
         Xs, _, _ = fetch_matrix(src, [main_feature]; sparse = true)
         @test Xs isa SparseMatrixCSC && Vector(vec(Xs)) == df[!, keyed_main]
+        # sparse results with a requested element type agree with dense ones, also for reordered cells
+        Xs32, _, _ = fetch_matrix(src, [main_feature]; sparse = true, eltype = Float32)
+        @test Xs32 isa SparseMatrixCSC{Float32,Int} && size(Xs32) == (n, 1)
+        @test Matrix(Xs32)[:, 1] ≈ Float32.(df[!, keyed_main])
+        Xa32, _, _ = fetch_matrix(src, [alt_feature]; modality = alt_modality, sparse = true, eltype = Float32)
+        @test Matrix(Xa32)[:, 1] ≈ Float32.(df[!, keyed_alt])
+        @test Matrix(fetch_matrix(src, [main_feature]; cells = sub, sparse = true)[1]) == fetch_matrix(src, [main_feature]; cells = sub)[1]
+        dsp = fetch_data(src, vars; sparse = true)
+        @test names(dsp) == names(df)
+        @test dsp[!, keyed_main] isa SparseVector && Vector(dsp[!, keyed_main]) == df[!, keyed_main]
+        @test dsp[!, keyed_alt] isa SparseVector && Vector(dsp[!, keyed_alt]) == df[!, keyed_alt]
+        @test isequal(dsp[!, categorical_var], df[!, categorical_var]) && dsp[!, red1] == df[!, red1]
+        @test fetch_feature(src, [main_feature]; sparse = true)[!, main_feature] isa SparseVector
+        @test_throws ArgumentError fetch_data(src, [keyed_main]; sparse = true, eltype = Int)
+        # chunked iteration concatenates to the full result and keeps the requested cell order
+        it = eachchunk(src, vars; cells_per_chunk = 2)
+        @test length(it) == cld(n, 2)
+        chunks = collect(it)
+        @test all(nrow(c) <= 2 for c in chunks) && sum(nrow, chunks) == n
+        cat = reduce(vcat, chunks)
+        for v in names(df)
+            @test isequal(cat[!, v], df[!, v])
+        end
+        catsub = reduce(vcat, collect(eachchunk(src, [keyed_main, numeric_var]; cells = sub, cells_per_chunk = 2)))
+        @test catsub.cell == sub && catsub[!, keyed_main] == df[[3, 1, 2], keyed_main]
+        @test isequal(catsub[!, numeric_var], df[[3, 1, 2], numeric_var])
+        (_, wch) = with_collected_warnings(() -> collect(eachchunk(src, [alt_feature]; cells_per_chunk = 2)))
+        @test count(x -> x.code == :alt_modality_renamed, wch) == 1
+        @test reduce(vcat, collect(eachchunk(src, [keyed_main]; sparse = true, cells_per_chunk = 4)))[!, keyed_main] isa AbstractVector
         # metadata
         md = fetch_metadata(src, [categorical_var, numeric_var])
         @test names(md) == ["cell", categorical_var, numeric_var]

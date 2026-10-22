@@ -9,7 +9,16 @@ A matrix-like layer whose values live elsewhere (disk, another process). Impleme
 """
 abstract type LazyMatrix end
 pull(m::LazyMatrix, feature_idx, cell_idx) = error("pull not implemented for $(typeof(m))")
-pull_sparse(m::LazyMatrix, feature_idx, cell_idx) = sparse(pull(m, feature_idx, cell_idx))
+"""`pull!(out, m, feature_idx, cell_idx)` — write the block into any `_put!` sink; default scatters `pull`."""
+function pull!(out, m::LazyMatrix, feature_idx, cell_idx)
+    M = pull(m, feature_idx, cell_idx)
+    @inbounds for j in axes(M, 2), i in axes(M, 1)
+        _put!(out, i, j, M[i, j])
+    end
+    return out
+end
+pull_sparse(m::LazyMatrix, feature_idx, cell_idx) = to_sparse_matrix(pull!(SparseSink(Float64, length(feature_idx)), m, feature_idx, cell_idx), length(cell_idx))
+pull_sparse(m::LazyMatrix, feature_idx, cell_idx, ::Type{T}) where {T} = _convert_sparse(T, pull_sparse(m, feature_idx, cell_idx))
 """`pull_columns(m, feature_idx, cell_idx, T)` — per-feature vectors; default copies from `pull`."""
 function pull_columns(m::LazyMatrix, feature_idx, cell_idx, ::Type{T}) where {T}
     M = pull(m, feature_idx, cell_idx)
@@ -115,14 +124,25 @@ function expression_columns(src::MemoryAnnData, m::AbstractString, layer::Abstra
     L = _layer(src, m, layer)
     L isa LazyMatrix ? pull_columns(L, fidx, cidx, T) : gather_cells_by_features_columns(L, cidx, fidx, T)
 end
+function expression!(out, src::MemoryAnnData, m::AbstractString, layer::AbstractString,
+                     fidx::AbstractVector{Int}, cidx::AbstractVector{Int})
+    L = _layer(src, m, layer)
+    L isa LazyMatrix && return pull!(out, L, fidx, cidx)
+    L isa SparseMatrixCSC && return gather_cf!(out, L, cidx, fidx)
+    @inbounds for (j, f) in enumerate(fidx), (i, c) in enumerate(cidx)
+        _put!(out, i, j, L[c, f])
+    end
+    return out
+end
 supports_sparse(src::MemoryAnnData, m::AbstractString, layer::AbstractString) = true
 function expression_sparse(src::MemoryAnnData, m::AbstractString, layer::AbstractString,
-                           fidx::AbstractVector{Int}, cidx::AbstractVector{Int})
+                           fidx::AbstractVector{Int}, cidx::AbstractVector{Int}, ::Type{T}) where {T}
     L = _layer(src, m, layer)
-    L isa LazyMatrix && return pull_sparse(L, fidx, cidx)
-    L isa SparseMatrixCSC && return gather_cf_sparse(L, cidx, fidx)
-    return sparse(gather_dense(L, cidx, fidx))
+    L isa LazyMatrix && return pull_sparse(L, fidx, cidx, T)
+    return to_sparse_matrix(expression!(SparseSink(T, length(fidx)), src, m, layer, fidx, cidx), length(cidx))
 end
+expression_sparse(src::MemoryAnnData, m::AbstractString, layer::AbstractString, fidx::AbstractVector{Int}, cidx::AbstractVector{Int}) =
+    expression_sparse(src, m, layer, fidx, cidx, Float64)
 metadata_names(src::MemoryAnnData) = names(src.obs)
 metadata_column(src::MemoryAnnData, name::AbstractString, cidx::AbstractVector{Int}) = src.obs[cidx, name]
 metadata_table(src::MemoryAnnData, cidx::AbstractVector{Int}) = src.obs[cidx, :]

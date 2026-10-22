@@ -78,3 +78,63 @@ def test_helpers(h5ad_path):
     assert scuba.n_unique(ds, "condensed_cell_type") == 10
     assert len(scuba.unique_values(ds, "condensed_cell_type")) == 10
     assert ds.fetch_data(["GAPDH"]).shape == (250, 1)
+
+
+def test_fetch_matrix_dense_and_sparse(h5ad_path, adata):
+    import scipy.sparse as sps
+    genes = ["GAPDH", "UNG", "MEIS1"]
+    X, cells, names = scuba.fetch_matrix(h5ad_path, genes)
+    assert isinstance(X, np.ndarray) and X.shape == (250, 3) and names == genes and len(cells) == 250
+    ref = adata[:, genes].X
+    ref = ref.toarray() if sps.issparse(ref) else np.asarray(ref)
+    np.testing.assert_allclose(X, ref)
+    Xs, cells_s, names_s = scuba.fetch_matrix(h5ad_path, genes, sparse=True, dtype="float32")
+    assert sps.isspmatrix_csc(Xs) and Xs.dtype == np.float32 and cells_s == cells and names_s == names
+    np.testing.assert_allclose(Xs.toarray(), ref.astype(np.float32))
+    # a cell subset in the requested order
+    sub = list(cells[5:0:-1])
+    Xsub, cells_sub, _ = scuba.fetch_matrix(h5ad_path, ["GAPDH"], cells=sub, sparse=True)
+    assert cells_sub == sub
+    np.testing.assert_allclose(Xsub.toarray()[:, 0], ref[[cells.index(c) for c in sub], 0])
+    with pytest.raises(ValueError):
+        scuba.fetch_matrix(h5ad_path, genes, dtype="int64")
+
+
+def test_fetch_data_sparse_columns(h5ad_path):
+    dense = scuba.fetch_data(h5ad_path, ["X_GAPDH", "protein_CD117-AB", "Batch", "X_umap_1"])
+    sp = scuba.fetch_data(h5ad_path, ["X_GAPDH", "protein_CD117-AB", "Batch", "X_umap_1"], sparse=True)
+    assert list(sp.columns) == list(dense.columns)
+    assert isinstance(sp["X_GAPDH"].dtype, pd.SparseDtype)
+    np.testing.assert_allclose(sp["X_GAPDH"].sparse.to_dense().to_numpy(), dense["X_GAPDH"].to_numpy())
+    np.testing.assert_allclose(sp["protein_CD117-AB"].sparse.to_dense().to_numpy(), dense["protein_CD117-AB"].to_numpy())
+    assert list(sp["Batch"]) == list(dense["Batch"])
+    np.testing.assert_allclose(sp["X_umap_1"].to_numpy(), dense["X_umap_1"].to_numpy())
+
+
+def test_iter_chunks_concatenates(h5ad_path):
+    full = scuba.fetch_data(h5ad_path, VARS)
+    chunks = list(scuba.iter_chunks(h5ad_path, VARS, cells_per_chunk=64))
+    assert len(chunks) == 4 and [len(c) for c in chunks] == [64, 64, 64, 58]
+    cat = pd.concat(chunks)
+    pd.testing.assert_frame_equal(cat, full)
+    ds = scuba.open(h5ad_path)
+    assert sum(len(c) for c in ds.iter_chunks(["X_GAPDH"], chunk_bytes=2048)) == 250
+
+
+def test_open_h5mu_matches_h5ad(h5ad_path):
+    import os
+    h5mu = os.path.join(os.path.dirname(h5ad_path), "AML.h5mu")
+    if not os.path.exists(h5mu):
+        pytest.skip("AML.h5mu fixture not built")
+    mu = scuba.open(h5mu)
+    a = mu.fetch_data(["rna_GAPDH", "prot_CD117-AB", "rna_X_umap_1", "Batch"])
+    b = scuba.fetch_data(h5ad_path, ["X_GAPDH", "protein_CD117-AB", "X_umap_1", "Batch"])
+    np.testing.assert_allclose(a["rna_GAPDH"].to_numpy(), b["X_GAPDH"].to_numpy())
+    np.testing.assert_allclose(a["prot_CD117-AB"].to_numpy(), b["protein_CD117-AB"].to_numpy())
+    np.testing.assert_allclose(a["rna_X_umap_1"].to_numpy(), b["X_umap_1"].to_numpy())
+    assert list(a["Batch"]) == list(b["Batch"])
+    assert scuba.default_reduction(mu) == "rna_X_umap"
+    assert "rna_condensed_cell_type" in scuba.meta_varnames(mu)
+    import mudata as md
+    with pytest.raises(TypeError):
+        scuba.fetch_data(md.read_h5mu(h5mu), ["rna_GAPDH"])

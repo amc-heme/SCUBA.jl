@@ -216,50 +216,6 @@ function _scatter_compressed!(out, ind::AbstractVector, val::AbstractVector, ind
     return out
 end
 
-"""Sparse (cells × features) block from a CSR/CSC matrix element."""
-function read_sparse_block_sparse(store::AbstractStore, ref::MatrixRef, indptr::Vector{Int},
-                                  cell_idx::AbstractVector{Int}, feature_idx::AbstractVector{Int})
-    I = Int[]; J = Int[]; V = Float64[]
-    data_path = ref.path * "/data"; idx_path = ref.path * "/indices"
-    if ref.kind == :csc
-        pos = position_lookup(ref.n_obs, cell_idx)
-        colpos = position_lookup(ref.n_var, feature_idx)
-        _foreach_block(indptr, consecutive_runs(sort(feature_idx))) do a, b, members
-            ind = store_read(store, idx_path, a:b); val = store_read(store, data_path, a:b)
-            _collect_compressed!(I, J, V, ind, val, indptr, members, colpos, pos, a, true)
-        end
-    else
-        fpos = position_lookup(ref.n_var, feature_idx)
-        rowpos = position_lookup(ref.n_obs, cell_idx)
-        _foreach_block(indptr, consecutive_runs(sort(cell_idx))) do a, b, members
-            ind = store_read(store, idx_path, a:b); val = store_read(store, data_path, a:b)
-            _collect_compressed!(I, J, V, ind, val, indptr, members, rowpos, fpos, a, false)
-        end
-    end
-    return sparse(I, J, V, length(cell_idx), length(feature_idx))
-end
-
-# COO counterpart of `_scatter_compressed!` (same function-barrier rationale).
-function _collect_compressed!(I::Vector{Int}, J::Vector{Int}, V::Vector{Float64},
-                              ind::AbstractVector, val::AbstractVector, indptr::Vector{Int},
-                              members, major_pos::Vector{Int}, minor_pos::Vector{Int}, a::Int,
-                              major_is_feature::Bool)
-    @inbounds for m in members
-        q = major_pos[m]
-        for t in (indptr[m] + 1):indptr[m + 1]
-            p = minor_pos[ind[t - a + 1] + 1]
-            p == 0 && continue
-            if major_is_feature
-                push!(I, p); push!(J, q)
-            else
-                push!(I, q); push!(J, p)
-            end
-            push!(V, Float64(val[t - a + 1]))
-        end
-    end
-    return nothing
-end
-
 """Dense block from a dense matrix element stored python-shape (n_obs, n_var)."""
 read_dense_block(store::AbstractStore, ref::MatrixRef, cell_idx::AbstractVector{Int}, feature_idx::AbstractVector{Int}) =
     read_dense_block!(Matrix{Float64}(undef, length(cell_idx), length(feature_idx)), store, ref, cell_idx, feature_idx)

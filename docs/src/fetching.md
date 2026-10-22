@@ -42,10 +42,42 @@ metadata is a `CategoricalVector` with level order preserved; missing values are
 Each column carries `colmetadata(df, col, "scuba")`, a named tuple `(kind, target, layer, input)`
 recording where it came from.
 
+## Opening containers
+
+`open_source(path)` sniffs the format and returns the matching source: `open_h5ad` for AnnData
+`.h5ad` files, `open_h5mu` for MuData `.h5mu` files, `open_zarr` (with `using Zarr`) for zarr
+stores of either layout. BPCells directories hold a single matrix and are composed into a source
+with `bpcells_modality`.
+
+## Large results: sparse columns, typed values and chunks
+
+A dense result of 1000 genes × 1M cells is 8 GB of `Float64`. Three options keep such requests
+tractable, and the size guard (`SCUBA.MAX_DENSE_BYTES[]`, warning by default or an error with
+`SCUBA.DENSE_LIMIT_MODE[] = :error`) points at them when a dense request exceeds its limit:
+
+- `eltype = Float32` halves the result (h5ad data is usually single precision anyway).
+- `sparse = true` on `fetch_data`, `fetch_feature` and `fetch_matrix` returns expression values
+  as `SparseVector` columns / a `SparseMatrixCSC` holding only the nonzeros (metadata and reduction
+  columns stay dense; stored zeros are never structural entries). Sparse results are not subject
+  to the dense guard.
+- [`eachchunk`](@ref)`(src, vars; cells_per_chunk, chunk_bytes = 256 MiB)` iterates the result of
+  `fetch_data` in consecutive cell slices with identical columns, so `reduce(vcat, collect(it))`
+  equals the full table; variables are resolved and metadata read once. On compressed-column
+  (csc) h5ad files every chunk re-reads the requested feature columns, so prefer
+  `fetch_matrix(...; sparse=true)` there when the whole block is needed.
+
+```julia
+X, cells, genes = fetch_matrix(src, genes; sparse = true, eltype = Float32)   # SparseMatrixCSC{Float32}
+for chunk in eachchunk(src, [genes; "cell_type"]; chunk_bytes = 2^28)
+    process(chunk)                                                          # a DataFrame per ≤256 MiB
+end
+```
+
 ## Other accessors
 
 - [`fetch_feature`](@ref) — features from one modality only (fast path for plotting).
-- [`fetch_matrix`](@ref) — a dense or sparse cells × features matrix.
+- [`fetch_matrix`](@ref) — a dense or sparse cells × features matrix (`eltype`, size guard).
+- [`eachchunk`](@ref) — `fetch_data` in cell chunks.
 - [`fetch_metadata`](@ref), [`fetch_cells`](@ref), [`unique_values`](@ref), [`n_unique`](@ref).
 - [`fetch_reduction`](@ref), [`default_reduction`](@ref), [`reduction_dimnames`](@ref).
 - [`snapshot`](@ref) — materialise any source in memory for repeated queries.

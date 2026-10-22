@@ -5,7 +5,7 @@ module SCUBAZarrExt
 using SCUBA, Zarr, OrderedCollections
 using SCUBA: AbstractStore, SourceCache, H5Modality, MatrixRef, ArrayRef, dataframe_index, dataframe_columns,
              matrix_ref, encoding_type, store_size
-import SCUBA: store_haskey, store_isgroup, store_attrs, store_children, store_size, store_eltype, store_read, open_zarr
+import SCUBA: store_haskey, store_isgroup, store_attrs, store_root_attrs, store_children, store_size, store_eltype, store_read, open_zarr
 
 struct ZarrStore <: AbstractStore
     root::ZGroup
@@ -63,7 +63,11 @@ Open an AnnData zarr store (format 2 or 3). Returns a `SCUBA.H5ADSource` whose s
 function open_zarr(path::AbstractString)
     root = zopen(String(path), "r")
     root isa ZGroup || throw(ArgumentError("$path is not a zarr group"))
-    return SCUBA.anndata_source_from_store(ZarrStore(root), String(path))
+    store = ZarrStore(root)
+    et = string(get(root.attrs, "encoding-type", ""))
+    return et == "MuData" ? SCUBA.mudata_source_from_store(store, String(path)) :
+                            SCUBA.anndata_source_from_store(store, String(path))
 end
+store_root_attrs(s::ZarrStore) = Dict{String,Any}(s.root.attrs)
 
 end # module

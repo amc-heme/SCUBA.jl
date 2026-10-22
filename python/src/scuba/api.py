@@ -30,6 +30,12 @@ class Dataset:
     def fetch_reduction(self, reduction=None, cells=None, dims=(1, 2)):
         return fetch_reduction(self, reduction, cells=cells, dims=dims)
 
+    def fetch_matrix(self, features=None, modality=None, layer=None, cells=None, sparse=False, dtype="float64"):
+        return fetch_matrix(self, features, modality=modality, layer=layer, cells=cells, sparse=sparse, dtype=dtype)
+
+    def iter_chunks(self, vars, **kwargs):
+        return iter_chunks(self, vars, **kwargs)
+
 
 def init(threads: int | None = None, sysimage: str | None = None) -> None:
     """Start the Julia runtime now (it otherwise starts on the first call)."""
@@ -41,7 +47,7 @@ def init(threads: int | None = None, sysimage: str | None = None) -> None:
 
 
 def open(path: str | os.PathLike) -> Dataset:
-    """Open an on-disk container with SCUBA.jl's native readers (.h5ad, zarr store, BPCells directory)."""
+    """Open an on-disk container with SCUBA.jl's native readers (.h5ad, .h5mu, zarr store)."""
     p = os.fspath(path)
     S = _jl.S()
     if os.path.isdir(p):
@@ -50,8 +56,12 @@ def open(path: str | os.PathLike) -> Dataset:
         if os.path.exists(os.path.join(p, "version")) and os.path.exists(os.path.join(p, "idxptr")):
             raise ValueError("a BPCells directory is a single matrix; build a dataset around it from Julia (SCUBA.bpcells_modality)")
         raise ValueError(f"unrecognised directory container: {p}")
-    if p.endswith(".h5ad") or p.endswith(".h5"):
+    if p.endswith(".h5mu"):
+        return Dataset(_jl.call(S.open_h5mu, p), p)
+    if p.endswith(".h5ad"):
         return Dataset(_jl.call(S.open_h5ad, p), p)
+    if p.endswith(".h5") or p.endswith(".hdf5"):
+        return Dataset(_jl.call(S.open_source, p), p)
     raise ValueError(f"unrecognised container: {p}")
 
 
@@ -60,6 +70,9 @@ def _wrap(obj) -> Dataset:
         return obj
     if isinstance(obj, (str, os.PathLike)):
         return open(obj)
+    # live mudata.MuData: not supported yet (write it with .write() and open the .h5mu path)
+    if hasattr(obj, "mod") and hasattr(obj, "obsmap"):
+        raise TypeError("live mudata.MuData objects are not supported yet; write the object with .write(path) and pass the .h5mu path")
     # live anndata.AnnData (duck-typed to avoid importing anndata)
     if hasattr(obj, "obs_names") and hasattr(obj, "var_names"):
         S = _jl.S()
@@ -88,12 +101,61 @@ def _to_list(v) -> list:
     return [x.item() if hasattr(x, "item") else (str(x) if not isinstance(x, (int, float, bool)) else x) for x in v]
 
 
-def fetch_data(obj, vars: str | Sequence[str], layer: str | None = None, cells=None, strict: bool = False) -> pd.DataFrame:
-    """Fetch features, metadata columns and reduction coordinates into one DataFrame (index = cell IDs)."""
+def _dtype(dtype: str):
+    if dtype not in ("float32", "float64"):
+        raise ValueError("dtype must be 'float32' or 'float64'")
+    return _jl.glue().dtype_of(dtype)
+
+
+def fetch_data(obj, vars: str | Sequence[str], layer: str | None = None, cells=None, strict: bool = False,
+               sparse: bool = False, dtype: str = "float64") -> pd.DataFrame:
+    """Fetch features, metadata columns and reduction coordinates into one DataFrame (index = cell IDs).
+
+    With ``sparse=True`` the expression columns are pandas sparse columns (one shared block);
+    ``dtype`` is the element type of the expression values.
+    """
     ds = _wrap(obj)
     S = _jl.S()
-    df = _jl.call(S.fetch_data, ds._src, _vars(vars), layer=layer, cells=_cells(cells), strict=strict)
+    df = _jl.call(S.fetch_data, ds._src, _vars(vars), layer=layer, cells=_cells(cells), strict=strict,
+                  sparse=sparse, eltype=_dtype(dtype))
     return _to_pandas(df)
+
+
+def fetch_matrix(obj, features=None, modality: str | None = None, layer: str | None = None, cells=None,
+                 sparse: bool = False, dtype: str = "float64"):
+    """Expression block of one modality as ``(X, cells, features)``.
+
+    ``X`` is a cells × features ``numpy.ndarray`` or, with ``sparse=True``, a ``scipy.sparse.csc_matrix``
+    (AnnData orientation). ``features=None`` selects every feature of the modality. Dense results are
+    subject to SCUBA's size guard; sparse ones are not.
+    """
+    ds = _wrap(obj)
+    g = _jl.glue()
+    _dtype(dtype)
+    X, cells_out, names = _jl.call(g.fetch_matrix, ds._src, None if features is None else _vars(features),
+                                   modality=modality, layer=layer, cells=_cells(cells), sparse=sparse, dtype=dtype)
+    return X, list(cells_out), list(names)
+
+
+def iter_chunks(obj, vars: str | Sequence[str], layer: str | None = None, cells=None, strict: bool = False,
+                dtype: str = "float64", sparse: bool = False, cells_per_chunk: int | None = None,
+                chunk_bytes: int | None = None):
+    """Yield ``fetch_data(obj, vars, ...)`` as consecutive DataFrame chunks over cells.
+
+    Every chunk has the same columns as the full result, so ``pd.concat(iter_chunks(...))`` equals
+    ``fetch_data(...)``. The chunk size is ``cells_per_chunk`` or derived from ``chunk_bytes`` (default
+    256 MiB) and the number of expression columns.
+    """
+    ds = _wrap(obj)
+    S = _jl.S()
+    kw = dict(layer=layer, cells=_cells(cells), strict=strict, eltype=_dtype(dtype), sparse=sparse)
+    if cells_per_chunk is not None:
+        kw["cells_per_chunk"] = int(cells_per_chunk)
+    if chunk_bytes is not None:
+        kw["chunk_bytes"] = int(chunk_bytes)
+    it = _jl.call(S.eachchunk, ds._src, _vars(vars), **kw)
+    for df in it:
+        yield _to_pandas(df)
 
 
 def fetch_feature(obj, features, modality: str | None = None, layer: str | None = None, cells=None) -> pd.DataFrame:

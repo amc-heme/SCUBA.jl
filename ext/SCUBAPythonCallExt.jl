@@ -257,9 +257,44 @@ function _cell_index(cells::AbstractVector{<:AbstractString})
     return get!(build, INDEX_CACHE, cells)
 end
 
+"""
+    SCUBA.to_scipy(X) -> scipy.sparse.csc_matrix
+
+Wrap a cells × features `SparseMatrixCSC` as a SciPy CSC matrix. The values are shared with the
+Julia array (kept alive by the juliacall wrapper); the index arrays are fresh 0-based copies.
+"""
+function SCUBA.to_scipy(X::SparseMatrixCSC)
+    data = np.asarray(Py(nonzeros(X)))
+    indices = np.asarray(Py(rowvals(X) .- 1))
+    indptr = np.asarray(Py(X.colptr .- 1))
+    return sps.csc_matrix(pytuple((data, indices, indptr)); shape = pytuple((size(X, 1), size(X, 2))))
+end
+"""`SCUBA.to_numpy(X)` — numpy view (Fortran order) of a Julia matrix, no copy."""
+SCUBA.to_numpy(X::AbstractMatrix) = np.asarray(Py(X))
+
+# A pandas SparseArray with fill value 0 (DataFrame.sparse.from_spmatrix would use NaN), built
+# from the SparseVector's index and value buffers.
+function _pandas_sparse_column(v::SparseVector{T}) where {T}
+    dtype = T == Float32 ? np.float32 : np.float64
+    vals = np.asarray(Py(Vector{T}(nonzeros(v))))
+    idx = np.asarray(Py(Int32.(SparseArrays.nonzeroinds(v) .- 1)))
+    sindex = pyimport("pandas._libs.sparse").IntIndex(length(v), idx)
+    return pd.arrays.SparseArray(vals; sparse_index = sindex, fill_value = dtype(0), dtype = dtype)
+end
+
 function _to_pandas(df::DataFrame, cells::AbstractVector{<:AbstractString})
     index = _cell_index(cells)
     cols = names(df)
+    # Sparse expression columns (fetch_data(...; sparse=true)): one pandas sparse block for all of
+    # them, dense columns (metadata, reductions) inserted at their positions.
+    if any(n -> df[!, n] isa SparseVector, cols)
+        d = pydict()
+        for n in cols
+            v = df[!, n]
+            d[n] = v isa SparseVector ? _pandas_sparse_column(v) : _pyseries(v)
+        end
+        return pd.DataFrame(d; index = index)
+    end
     # Wide all-numeric results (feature fetches): hand pandas one 2-D block instead of N columns,
     # which it would otherwise consolidate column by column (~25 ms per column at 1M cells).
     if length(cols) >= 2 && all(n -> df[!, n] isa Vector{<:Union{Float32,Float64}}, cols)

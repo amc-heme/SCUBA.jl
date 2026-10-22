@@ -79,6 +79,9 @@ end
         f = [1, 3, 7]; c = [2, 5, 9, 11]
         @test SCUBA.pull(mt, c, f) == permutedims(SCUBA.pull(m, f, c))
         @test Matrix(SCUBA.pull_sparse(mt, c, f)) == permutedims(SCUBA.pull(m, f, c))
+        @test Matrix(SCUBA.pull_sparse(m, f, c, Float32)) ≈ Float32.(SCUBA.pull(m, f, c))
+        @test Matrix(SCUBA.pull_sparse(mt, c, f, Float32)) ≈ Float32.(permutedims(SCUBA.pull(m, f, c)))
+        @test eltype(SCUBA.pull_columns(mt, c, f, Float32)[1]) == Float32
         # out-of-range compressed vectors are rejected instead of read out of bounds
         @test_throws ArgumentError SCUBA.pull(m, [1], [m.ncol + 1])
     end

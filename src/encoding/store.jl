@@ -9,6 +9,8 @@ function store_haskey end
 function store_isgroup end
 """`store_attrs(store, path) -> Dict{String,Any}`"""
 function store_attrs end
+"""`store_root_attrs(store) -> Dict{String,Any}` — attributes of the container's root group."""
+function store_root_attrs end
 """`store_children(store, path) -> Vector{String}`"""
 function store_children end
 """`store_size(store, path) -> Tuple` (Julia dimension order)"""
@@ -37,6 +39,13 @@ function store_attrs(s::H5Store, path::AbstractString)
     out = Dict{String,Any}()
     for k in keys(HDF5.attrs(obj))
         out[String(k)] = _normalize_attr(HDF5.read_attribute(obj, k))
+    end
+    return out
+end
+function store_root_attrs(s::H5Store)
+    out = Dict{String,Any}()
+    for k in keys(HDF5.attrs(s.file))
+        out[String(k)] = _normalize_attr(HDF5.read_attribute(s.file, k))
     end
     return out
 end

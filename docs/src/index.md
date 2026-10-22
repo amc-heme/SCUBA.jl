@@ -29,7 +29,7 @@ pkg> add SCUBA
 
 Optional backends activate when the corresponding package is loaded: `using Zarr` (zarr
 stores), `using RCall` (live Seurat / SingleCellExperiment objects), `using PythonCall` (live
-`anndata.AnnData` objects), `using Muon` (Muon.jl `AnnData` / `MuData`).
+`anndata.AnnData` objects).
 
 ## Contents
 

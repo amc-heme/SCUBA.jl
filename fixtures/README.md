@@ -13,6 +13,7 @@ copied from the R package SCUBA 1.2.2 (`data/` and `inst/extdata/`).
 | `AML_BPCells/{RNA,AB}_{counts,data}/` | BPCells matrix directories | SCUBA R package |
 | `AML_Seurat.rda`, `AML_BPCells.rda` | Seurat objects (in-memory / BPCells layers) | SCUBA R package |
 | `AML_h5ad_csr.h5ad`, `AML_h5ad_dense.h5ad`, `AML.zarr`, `AML.h5mu`, `AML_h5ad_edge.h5ad` | derived AnnData/MuData forms | `make_fixtures.py` |
+| `AML_partial.h5mu` | MuData with partial cell membership per modality, ambiguous / modality-only obs columns, modality and global reductions | `make_mudata_partial.py` |
 | `build/goldens/` | expected outputs of SCUBA R 1.2.2 for `cases.json` | `make_goldens.R` |
 
 Regenerate with `make -C fixtures` (needs R with SCUBA 1.2.2, and the `scuba-fixtures` conda env).

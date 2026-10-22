@@ -93,6 +93,6 @@ fetch_cells = 0.1
 [implementations]
 julia = ["jl_h5ad_csc", "jl_h5ad_csr", "jl_bpcells", "jl_bpcells_rowmajor", "jl_snapshot"]
 r_legacy = ["r_seurat_bpcells", "r_seurat_bpcells_rowmajor", "r_sce_backed", "r_anndata_backed", "raw_bpcells_r", "raw_bpcells_r_rowmajor", "raw_seurat_fetchdata"]
-r_julia = ["r_seurat_bpcells", "r_seurat_bpcells_rowmajor", "r_sce_backed"]
+r_julia = ["r_seurat_bpcells", "r_seurat_bpcells_rowmajor", "r_sce_backed", "r_h5ad_julia"]
 python = ["raw_anndata_py", "raw_h5py_py", "py_scuba_sc"]
 optional = ["r_seurat_inmem", "raw_seurat_fetchdata", "jl_snapshot"]

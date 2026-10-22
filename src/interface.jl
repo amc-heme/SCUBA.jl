@@ -68,9 +68,29 @@ large request never holds a second dense copy.
 """
 function expression_columns(src::AbstractSingleCellSource, modality::AbstractString, layer::AbstractString,
                             feature_idx::AbstractVector{Int}, cell_idx::AbstractVector{Int}, ::Type{T}) where {T<:Real}
-    M = expression(src, modality, layer, feature_idx, cell_idx)
-    return Vector{T}[Vector{T}(view(M, :, j)) for j in 1:size(M, 2)]
+    return expression!(_columns(T, length(cell_idx), length(feature_idx)), src, modality, layer, feature_idx, cell_idx)
 end
+"""
+    expression!(out, src, modality, layer, feature_idx, cell_idx) -> out
+
+Write every value of the requested block into `out` through `_put!(out, i, j, v)` (cell position
+`i`, feature position `j`). `out` is a `Matrix{T}`, a `Vector{Vector{T}}` (per-feature columns) or a
+[`SparseSink`](@ref). Backends implement this one method to get typed dense, column and sparse
+results; the default materialises `expression` and scatters it.
+"""
+function expression!(out, src::AbstractSingleCellSource, modality::AbstractString, layer::AbstractString,
+                     feature_idx::AbstractVector{Int}, cell_idx::AbstractVector{Int})
+    M = expression(src, modality, layer, feature_idx, cell_idx)
+    @inbounds for j in axes(M, 2), i in axes(M, 1)
+        _put!(out, i, j, M[i, j])
+    end
+    return out
+end
+"""Dense block with element type `T` (the `Float64` case is `expression` itself)."""
+_dense_block(src::AbstractSingleCellSource, modality::AbstractString, layer::AbstractString,
+             feature_idx::AbstractVector{Int}, cell_idx::AbstractVector{Int}, ::Type{T}) where {T} =
+    T === Float64 ? expression(src, modality, layer, feature_idx, cell_idx) :
+    expression!(zeros(T, length(cell_idx), length(feature_idx)), src, modality, layer, feature_idx, cell_idx)
 metadata_names(src::AbstractSingleCellSource) = _notimpl(:metadata_names, src)
 """`metadata_column(src, name, cell_idx)` — one metadata column, subset to `cell_idx`."""
 metadata_column(src::AbstractSingleCellSource, name::AbstractString, cell_idx::AbstractVector{Int}) =
@@ -87,10 +107,24 @@ reduction(src::AbstractSingleCellSource, key::AbstractString, dims::AbstractVect
 cache(src::AbstractSingleCellSource) = src.cache::SourceCache
 source_name(src::AbstractSingleCellSource) = string(nameof(typeof(src)))
 supports_sparse(src::AbstractSingleCellSource, modality::AbstractString, layer::AbstractString) = false
-"""`expression_sparse(src, modality, layer, feature_idx, cell_idx)` — as `expression`, but a `SparseMatrixCSC`."""
+"""
+    expression_sparse(src, modality, layer, feature_idx, cell_idx[, T]) -> SparseMatrixCSC
+
+As `expression`, but sparse (cells × features), with values of type `T` (`Float64` without it).
+The default fills a [`SparseSink`](@ref) through `expression!`; a backend with a cheaper native
+sparse path overrides the five-argument form (converted to `T`) or the six-argument one.
+"""
 expression_sparse(src::AbstractSingleCellSource, modality::AbstractString, layer::AbstractString,
                   feature_idx::AbstractVector{Int}, cell_idx::AbstractVector{Int}) =
-    sparse(expression(src, modality, layer, feature_idx, cell_idx))
+    to_sparse_matrix(expression!(SparseSink(Float64, length(feature_idx)), src, modality, layer, feature_idx, cell_idx), length(cell_idx))
+expression_sparse(src::AbstractSingleCellSource, modality::AbstractString, layer::AbstractString,
+                  feature_idx::AbstractVector{Int}, cell_idx::AbstractVector{Int}, ::Type{T}) where {T} =
+    _convert_sparse(T, expression_sparse(src, modality, layer, feature_idx, cell_idx))
+_convert_sparse(::Type{T}, A::SparseMatrixCSC) where {T} = eltype(A) === T ? A : SparseMatrixCSC{T,Int}(A)
+"""`check_eltype(src, T)` — throw an `ArgumentError` when the backend cannot produce results of element type `T` (default: any `Real`; MuData needs a float for absent cells)."""
+check_eltype(::AbstractSingleCellSource, ::Type{T}) where {T} = nothing
+"""`reduction_aliases(src) -> Dict{String,String}` — extra names under which reductions may be addressed (alias => canonical key)."""
+reduction_aliases(src::AbstractSingleCellSource) = Dict{String,String}()
 """`reduction_search_names(src, key)` — names under which [`default_reduction`](@ref) recognises a reduction (default: the key only; the Seurat bridge adds the reduction name)."""
 reduction_search_names(src::AbstractSingleCellSource, key::AbstractString) = String[String(key)]
 
@@ -245,3 +279,7 @@ function open_zarr end
 Convert a SCUBA result `DataFrame` to a pandas DataFrame (cell IDs as index). Requires `using PythonCall`.
 """
 function to_pandas end
+"""`to_scipy(X::SparseMatrixCSC)` — a `scipy.sparse.csc_matrix` sharing the values (PythonCall extension)."""
+function to_scipy end
+"""`to_numpy(X::AbstractMatrix)` — a numpy array view of a Julia matrix (PythonCall extension)."""
+function to_numpy end

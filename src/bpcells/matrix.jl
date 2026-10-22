@@ -234,59 +234,29 @@ function _scan_kernel(visit, idxptr::Vector{Int}, comps::AbstractVector{Int}, id
     return nothing
 end
 
-function pull(m::BPCellsMatrix, fidx::AbstractVector{Int}, cidx::AbstractVector{Int})
-    out = zeros(Float64, length(cidx), length(fidx))
+# One scan writes into any `_put!` sink: dense matrix, per-feature columns or a SparseSink.
+function pull!(out, m::BPCellsMatrix, fidx::AbstractVector{Int}, cidx::AbstractVector{Int})
     if !m.transposed
         fpos = position_lookup(m.nrow, fidx)
         _scan(m, collect(cidx)) do i, f0, v
             p = fpos[f0 + 1]
-            p == 0 || (@inbounds out[i, p] = v)
+            p == 0 || _put!(out, i, p, v)
         end
     else
         cpos = position_lookup(m.ncol, cidx)
         _scan(m, collect(fidx)) do j, c0, v
             p = cpos[c0 + 1]
-            p == 0 || (@inbounds out[p, j] = v)
+            p == 0 || _put!(out, p, j, v)
         end
     end
     return out
 end
-
-function pull_columns(m::BPCellsMatrix, fidx::AbstractVector{Int}, cidx::AbstractVector{Int}, ::Type{T}) where {T}
-    cols = _columns(T, length(cidx), length(fidx))
-    if !m.transposed
-        fpos = position_lookup(m.nrow, fidx)
-        _scan(m, collect(cidx)) do i, f0, v
-            p = fpos[f0 + 1]
-            p == 0 || (@inbounds cols[p][i] = v)
-        end
-    else
-        cpos = position_lookup(m.ncol, cidx)
-        _scan(m, collect(fidx)) do j, c0, v
-            p = cpos[c0 + 1]
-            p == 0 || (@inbounds cols[j][p] = v)
-        end
-    end
-    return cols
-end
-
-function pull_sparse(m::BPCellsMatrix, fidx::AbstractVector{Int}, cidx::AbstractVector{Int})
-    I = Int[]; J = Int[]; V = Float64[]
-    if !m.transposed
-        fpos = position_lookup(m.nrow, fidx)
-        _scan(m, collect(cidx)) do i, f0, v
-            p = fpos[f0 + 1]
-            p == 0 || (push!(I, i); push!(J, p); push!(V, v))
-        end
-    else
-        cpos = position_lookup(m.ncol, cidx)
-        _scan(m, collect(fidx)) do j, c0, v
-            p = cpos[c0 + 1]
-            p == 0 || (push!(I, p); push!(J, j); push!(V, v))
-        end
-    end
-    return sparse(I, J, V, length(cidx), length(fidx))
-end
+pull(m::BPCellsMatrix, fidx::AbstractVector{Int}, cidx::AbstractVector{Int}) =
+    pull!(zeros(Float64, length(cidx), length(fidx)), m, fidx, cidx)
+pull_columns(m::BPCellsMatrix, fidx::AbstractVector{Int}, cidx::AbstractVector{Int}, ::Type{T}) where {T} =
+    pull!(_columns(T, length(cidx), length(fidx)), m, fidx, cidx)
+pull_sparse(m::BPCellsMatrix, fidx::AbstractVector{Int}, cidx::AbstractVector{Int}, ::Type{T} = Float64) where {T} =
+    to_sparse_matrix(pull!(SparseSink(T, length(fidx)), m, fidx, cidx), length(cidx))
 
 """Read the whole matrix as a features × cells `SparseMatrixCSC` (BPCells orientation)."""
 function SparseArrays.sparse(m::BPCellsMatrix)

@@ -36,28 +36,30 @@ function H5ADSource(path::AbstractString)
     end
 end
 
-"""Build a source over any `AbstractStore` holding the anndata layout (used by the HDF5 and Zarr readers)."""
-function anndata_source_from_store(store::AbstractStore, path::String)
+"""Build a source over any `AbstractStore` holding the anndata layout (used by the HDF5 and Zarr
+readers). `prefix` points at a nested anndata group (a MuData modality, `"mod/rna"`)."""
+function anndata_source_from_store(store::AbstractStore, path::String; prefix::AbstractString = "")
+    pp(rel) = isempty(prefix) ? rel : String(prefix) * "/" * rel
     begin
-        cells = dataframe_index(store, "obs")
-        obs_cols = dataframe_columns(store, "obs")
-        var_names = dataframe_index(store, "var")
+        cells = dataframe_index(store, pp("obs"))
+        obs_cols = dataframe_columns(store, pp("obs"))
+        var_names = dataframe_index(store, pp("var"))
         n_obs, n_var = length(cells), length(var_names)
 
         mods = OrderedDict{String,H5Modality}()
         xlayers = OrderedDict{String,MatrixRef}()
-        store_haskey(store, "X") && (xlayers["X"] = matrix_ref(store, "X"))
-        if store_haskey(store, "layers")
-            for l in store_children(store, "layers")
-                xlayers[l] = matrix_ref(store, "layers/" * l)
+        store_haskey(store, pp("X")) && (xlayers["X"] = matrix_ref(store, pp("X")))
+        if store_haskey(store, pp("layers"))
+            for l in store_children(store, pp("layers"))
+                xlayers[l] = matrix_ref(store, pp("layers/" * l))
             end
         end
         mods["X"] = H5Modality(var_names, xlayers)
 
         reds = OrderedDict{String,ArrayRef}()
-        if store_haskey(store, "obsm")
-            for k in store_children(store, "obsm")
-                p = "obsm/" * k
+        if store_haskey(store, pp("obsm"))
+            for k in store_children(store, pp("obsm"))
+                p = pp("obsm/" * k)
                 et = encoding_type(store, p)
                 if et == "dataframe"
                     ref = matrix_ref(store, p)
@@ -72,11 +74,11 @@ function anndata_source_from_store(store::AbstractStore, path::String)
                 end
             end
         end
-        if store_haskey(store, "raw") && store_haskey(store, "raw/X")
-            raw_var = dataframe_index(store, "raw/var")
-            mods["raw"] = H5Modality(raw_var, OrderedDict("X" => matrix_ref(store, "raw/X")))
+        if store_haskey(store, pp("raw")) && store_haskey(store, pp("raw/X"))
+            raw_var = dataframe_index(store, pp("raw/var"))
+            mods["raw"] = H5Modality(raw_var, OrderedDict("X" => matrix_ref(store, pp("raw/X"))))
         end
-        return H5ADSource(path, store, cells, "obs", obs_cols, mods, reds,
+        return H5ADSource(path, store, cells, pp("obs"), obs_cols, mods, reds,
                           Dict{String,Vector{Int}}(), SourceCache())
     end
 end
@@ -106,38 +108,29 @@ function _indptr(src::H5ADSource, ref::MatrixRef)
         Vector{Int}(store_read(src.store, ref.path * "/indptr"))
     end
 end
-function expression(src::H5ADSource, m::AbstractString, layer::AbstractString,
-                    fidx::AbstractVector{Int}, cidx::AbstractVector{Int})
+function expression!(out, src::H5ADSource, m::AbstractString, layer::AbstractString,
+                     fidx::AbstractVector{Int}, cidx::AbstractVector{Int})
     ref = _h5ref(src, m, layer)
     if ref.kind == :csr || ref.kind == :csc
-        return read_sparse_block(src.store, ref, _indptr(src, ref), cidx, fidx)
+        return read_sparse_block!(out, src.store, ref, _indptr(src, ref), cidx, fidx)
     elseif ref.kind == :dense
-        return read_dense_block(src.store, ref, cidx, fidx)
+        return read_dense_block!(out, src.store, ref, cidx, fidx)
     else
-        return read_dataframe_block(src.store, ref, cidx, fidx)
+        return read_dataframe_block!(out, src.store, ref, cidx, fidx)
     end
 end
-function expression_columns(src::H5ADSource, m::AbstractString, layer::AbstractString,
-                            fidx::AbstractVector{Int}, cidx::AbstractVector{Int}, ::Type{T}) where {T<:Real}
-    ref = _h5ref(src, m, layer)
-    cols = _columns(T, length(cidx), length(fidx))
-    if ref.kind == :csr || ref.kind == :csc
-        read_sparse_block!(cols, src.store, ref, _indptr(src, ref), cidx, fidx)
-    elseif ref.kind == :dense
-        read_dense_block!(cols, src.store, ref, cidx, fidx)
-    else
-        read_dataframe_block!(cols, src.store, ref, cidx, fidx)
-    end
-    return cols
-end
+expression(src::H5ADSource, m::AbstractString, layer::AbstractString, fidx::AbstractVector{Int}, cidx::AbstractVector{Int}) =
+    expression!(zeros(Float64, length(cidx), length(fidx)), src, m, layer, fidx, cidx)
+expression_columns(src::H5ADSource, m::AbstractString, layer::AbstractString, fidx::AbstractVector{Int},
+                   cidx::AbstractVector{Int}, ::Type{T}) where {T<:Real} =
+    expression!(_columns(T, length(cidx), length(fidx)), src, m, layer, fidx, cidx)
 supports_sparse(src::H5ADSource, m::AbstractString, layer::AbstractString) =
     _h5ref(src, m, layer).kind in (:csr, :csc)
-function expression_sparse(src::H5ADSource, m::AbstractString, layer::AbstractString,
-                           fidx::AbstractVector{Int}, cidx::AbstractVector{Int})
-    ref = _h5ref(src, m, layer)
-    ref.kind in (:csr, :csc) || return sparse(expression(src, m, layer, fidx, cidx))
-    return read_sparse_block_sparse(src.store, ref, _indptr(src, ref), cidx, fidx)
-end
+expression_sparse(src::H5ADSource, m::AbstractString, layer::AbstractString, fidx::AbstractVector{Int},
+                  cidx::AbstractVector{Int}, ::Type{T}) where {T} =
+    to_sparse_matrix(expression!(SparseSink(T, length(fidx)), src, m, layer, fidx, cidx), length(cidx))
+expression_sparse(src::H5ADSource, m::AbstractString, layer::AbstractString, fidx::AbstractVector{Int}, cidx::AbstractVector{Int}) =
+    expression_sparse(src, m, layer, fidx, cidx, Float64)
 metadata_names(src::H5ADSource) = src.obs_columns
 function metadata_column(src::H5ADSource, name::AbstractString, cidx::AbstractVector{Int})
     name in src.obs_columns || throw(MetadataNotFound([String(name)], src.obs_columns))

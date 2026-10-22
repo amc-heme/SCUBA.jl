@@ -29,6 +29,16 @@ end
 
 to_pandas(df::DataFrame) = SCUBA.to_pandas(df)
 
+dtype_of(s::AbstractString) = s == "float32" ? Float32 : s == "float64" ? Float64 :
+    throw(ArgumentError("dtype must be 'float32' or 'float64', got '$s'"))
+
+# fetch_matrix: (cells × features block, cell ids, feature names); sparse blocks cross as SciPy CSC
+function fetch_matrix(src, features; modality = nothing, layer = nothing, cells = nothing, sparse = false, dtype = "float64")
+    X, cs, fs = SCUBA.fetch_matrix(src, features; modality, layer, cells, sparse, eltype = dtype_of(dtype))
+    out = X isa SCUBA.SparseMatrixCSC ? SCUBA.to_scipy(X) : SCUBA.to_numpy(X)
+    return out, pystrings(cs), pystrings(fs)
+end
+
 errkind(e) = string(nameof(typeof(e)))
 
 # Vector of strings -> Python list of str in one call (avoids per-element conversion from Python)

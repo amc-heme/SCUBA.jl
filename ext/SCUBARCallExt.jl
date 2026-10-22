@@ -70,11 +70,14 @@ function _dgc_to_sparse(s::RObject)
     d = rcopy(Vector{Int}, R"$s@Dim")
     return SparseMatrixCSC{Float64,Int}(d[1], d[2], Vector{Int}(p), Vector{Int}(i), x)
 end
+# R returns a features × cells slice as a matrix, or as a bare numeric when it is 1 × 1 / a
+# vector; reshape by the known dimensions (R matrices are column-major like Julia's).
+_dense_from_r(s::RObject, nf::Int, nc::Int, ::Type{T}) where {T} = reshape(rcopy(Vector{T}, s), nf, nc)
 function _block_from_r(s::RObject, nf::Int, nc::Int)
     if _is_dgc(s)
         return gather_features_by_cells(_dgc_to_sparse(s), collect(1:nc), collect(1:nf))
     else
-        return Matrix{Float64}(permutedims(rcopy(Matrix{Float64}, s)))
+        return Matrix{Float64}(permutedims(_dense_from_r(s, nf, nc, Float64)))
     end
 end
 # Typed per-feature columns from an R slice (features × cells); the R-sliced values are copied into
@@ -84,7 +87,7 @@ function _columns_from_r(s::RObject, nf::Int, nc::Int, ::Type{T}) where {T}
     if _is_dgc(s)
         gather_fc!(cols, _dgc_to_sparse(s), collect(1:nc), collect(1:nf))
     else
-        M = rcopy(Matrix{T}, s)                       # features × cells, converted while copying
+        M = _dense_from_r(s, nf, nc, T)               # features × cells, converted while copying
         for j in 1:nf
             copyto!(cols[j], view(M, j, :))
         end
@@ -93,7 +96,7 @@ function _columns_from_r(s::RObject, nf::Int, nc::Int, ::Type{T}) where {T}
 end
 function _sparse_block_from_r(s::RObject, nf::Int, nc::Int)
     _is_dgc(s) && return gather_fc_sparse(_dgc_to_sparse(s), collect(1:nc), collect(1:nf))
-    return sparse(Matrix{Float64}(permutedims(rcopy(Matrix{Float64}, s))))
+    return sparse(Matrix{Float64}(permutedims(_dense_from_r(s, nf, nc, Float64))))
 end
 
 # ---------------------------------------------------------------------------
@@ -414,7 +417,7 @@ function getsrc(path::AbstractString)
         k = first(keys(PATH_CACHE)); old = PATH_CACHE[k]; delete!(PATH_CACHE, k)
         try close(old) catch end
     end
-    src = S.MetadataOverlay(S.open_h5ad(key); obs = DataFrame())
+    src = S.MetadataOverlay(S.open_source(key); obs = DataFrame())
     PATH_CACHE[key] = src
     return src
 end
@@ -426,7 +429,7 @@ function source_close(path::AbstractString)
 end
 _uns_strings(src, key) = try
     inner = src isa S.MetadataOverlay ? src.inner : src
-    if inner isa S.H5ADSource && S.store_haskey(inner.store, "uns/" * key)
+    if (inner isa S.H5ADSource || inner isa S.MuDataSource) && S.store_haskey(inner.store, "uns/" * key)
         collect(String, string.(S.read_element(inner.store, "uns/" * key)))
     else
         String[]
@@ -541,6 +544,20 @@ end
 function fetch_reduction(obj, reduction, cells, dims)
     df, w = run(S.fetch_reduction, obj, reduction; cells = cells, dims = dims)
     (totable(df)..., warnings = w)
+end
+# fetch_matrix for R: features × cells (the R convention), as dgCMatrix pieces (0-based i/p, x) or a
+# dense matrix, plus dimnames.
+function fetch_matrix(obj, features, modality, layer, cells, sparse::Bool, eltype = "Float64")
+    (X, cs, fs), w = run(S.fetch_matrix, obj, features === nothing ? nothing : asvec(features);
+                         modality = modality, layer = layer, cells = cells, sparse = sparse, eltype = _eltype(eltype))
+    if sparse
+        Xt = permutedims(X)                                      # features × cells
+        return (sparse = true, i = Int32.(S.SparseArrays.rowvals(Xt) .- 1), p = Int32.(Xt.colptr .- 1),
+                x = S.SparseArrays.nonzeros(Xt), dim = Int[size(Xt, 1), size(Xt, 2)],
+                features = collect(String, fs), cells = collect(String, cs), warnings = w)
+    else
+        return (sparse = false, x = permutedims(X), features = collect(String, fs), cells = collect(String, cs), warnings = w)
+    end
 end
 fetch_cells(obj, meta_var, meta_levels) = run(S.fetch_cells, obj, meta_var, asvec(meta_levels))
 get_all_cells(obj) = run(S.all_cells, obj)
