@@ -264,10 +264,18 @@ end
 """Embedding block (cells × dims) from an obsm array stored python-shape (n_obs, k)."""
 function read_array_block(store::AbstractStore, ref::ArrayRef, dims::AbstractVector{Int}, cell_idx::AbstractVector{Int})
     lo, hi = extrema(dims)
-    block = store_read(store, ref.path, lo:hi, :)            # (hi-lo+1) × n_obs
+    block = store_read(store, ref.path, lo:hi, :)            # (hi-lo+1) × n_obs; eltype unknown here
+    return _gather_array(block, dims, lo, cell_idx)
+end
+# Function barrier: `block` is concretely typed inside, so the gather does not box every value
+# (2 × 1M values took 215 ms and 6 M allocations without it; ~2 ms with it).
+function _gather_array(block::AbstractMatrix, dims::AbstractVector{Int}, lo::Int, cell_idx::AbstractVector{Int})
     out = Matrix{Float64}(undef, length(cell_idx), length(dims))
-    @inbounds for (j, d) in enumerate(dims), (i, c) in enumerate(cell_idx)
-        out[i, j] = block[d - lo + 1, c]
+    @inbounds for (j, d) in enumerate(dims)
+        r = d - lo + 1
+        for (i, c) in enumerate(cell_idx)
+            out[i, j] = block[r, c]
+        end
     end
     return out
 end

@@ -58,6 +58,11 @@ R engine and Julia engine) and raw library baselines on synthetic datasets of 10
   allocates and touches 8 GB of fresh R memory; a warm R session that reuses that memory does the
   h5ad fetch in 0.9 s. Process peak for the 1000-gene fetch: Seurat 18.6 GB → 12.0 GB, h5ad
   10.6 GB, against the 8 GB result itself. `options(SCUBA.julia_eltype)` is therefore a no-op.
+- **Reduction reads were boxed.** `fetch_reduction` on the 1M h5ad file took 215 ms natively (6 M
+  allocations for 2 × 1M values) because the obsm gather loop indexed a block of unknown element
+  type; a function barrier brings it to ~6 ms (the HDF5 read itself is 0.7 ms), and from R the
+  file-backed `fetch_reduction` drops from 253 ms to 36 ms. Metadata column reads were already
+  fast (2–13 ms at 1M).
 - **Memory.** A 1000-gene × 1M-cell dense result is 8 GB; peak RSS reached 25 GB in Julia and 60 GB
   in R in these runs. SCUBA.jl now fills result columns directly for results above 256 MiB (peak
   ~9 GB for the same query), offers `eltype = Float32` and a sparse `fetch_matrix`, and the size
