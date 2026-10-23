@@ -12,7 +12,7 @@ using SCUBA: AbstractSingleCellSource, SourceCache, LazyMatrix, BPCellsMatrix, p
 import SCUBA: cell_ids, modality_keys, default_modality, default_layer, feature_names, layer_names,
               expression, expression!, expression_columns, expression_sparse, supports_sparse, metadata_names, metadata_column, metadata_table,
               reduction_keys, reduction_ndims, reduction, source_name, set_metadata!, invalidate!,
-              canonical_modality, canonical_reduction, reduction_search_names
+              canonical_modality, canonical_reduction, reduction_search_names, aggregate_chunk_cells
 
 const R_HELPERS = """
 scuba_bp_dir <- function(x) {
@@ -263,6 +263,14 @@ function expression!(out, s::RSeuratSource, m::AbstractString, layer::AbstractSt
     return _scatter_from_r!(out, R"scuba_slice($mat, $f, $c)", length(fidx), length(cidx))
 end
 supports_sparse(::RSeuratSource, ::AbstractString, ::AbstractString) = true
+# A slice read through R is materialised in R (dense for DelayedArray / wrapped BPCells layers,
+# dgCMatrix otherwise), so `aggregate` walks R-backed layers in cell chunks bounded by CHUNK_BYTES.
+# Native BPCells layers stream and need no chunking.
+_r_chunk_cells(nfeat::Int, ncells::Int) = clamp(SCUBA.CHUNK_BYTES[] ÷ (8 * max(1, nfeat)), 1, max(1, ncells))
+function aggregate_chunk_cells(s::RSeuratSource, m::AbstractString, layer::AbstractString, nfeat::Int)
+    haskey(_mod(s, m).native, String(layer)) && return nothing
+    return _r_chunk_cells(nfeat, length(s.cells))
+end
 function expression_sparse(s::RSeuratSource, m::AbstractString, layer::AbstractString, fidx::AbstractVector{Int}, cidx::AbstractVector{Int})
     mod = _mod(s, m)
     nat = get(mod.native, String(layer), nothing)
@@ -381,6 +389,7 @@ function expression!(out, s::RSCESource, m::AbstractString, layer::AbstractStrin
     return _scatter_from_r!(out, R"scuba_slice($mat, $f, $c)", length(fidx), length(cidx))
 end
 supports_sparse(::RSCESource, ::AbstractString, ::AbstractString) = true
+aggregate_chunk_cells(s::RSCESource, ::AbstractString, ::AbstractString, nfeat::Int) = _r_chunk_cells(nfeat, length(s.cells))
 function expression_sparse(s::RSCESource, m::AbstractString, layer::AbstractString, fidx::AbstractVector{Int}, cidx::AbstractVector{Int})
     mat = _assay_obj(s, _mod(s, m), layer)
     f = _rint(collect(fidx)); c = _rint(collect(cidx))
@@ -628,6 +637,19 @@ function fetch_matrix(obj, features, modality, layer, cells, sparse::Bool, eltyp
                 cells = return_cells ? collect(String, cs) : nothing, warnings = w)
     end
 end
+# Pseudobulk for R: group sums (or means) of a layer as a dense features × groups R matrix, plus
+# the number of cells behind every group. The group code of each cell is computed in R from the
+# metadata (including columns that exist only on the R side), so Julia never resolves a grouping
+# variable, and the result crosses JuliaCall as a plain numeric matrix: no sparse index vectors,
+# no nnz limit, and no copy of the cells × features block anywhere.
+_scalar(x) = x isa AbstractArray ? first(x) : x       # length-1 R vectors may arrive as arrays
+function pseudobulk(obj, codes, ngroups, modality, layer, cells, features, fun = "sum")
+    (M, n, fs, _), w = run(S.aggregate, obj, Vector{Int32}(vec(codes)), Int(_scalar(ngroups));
+                           modality = modality === nothing ? nothing : String(_scalar(modality)),
+                           layer = layer === nothing ? nothing : String(_scalar(layer)), cells = cells,
+                           features = features === nothing ? nothing : asvec(features), fun = Symbol(_scalar(fun)))
+    return (values = permutedims(M), n = n, features = collect(String, fs), warnings = w)
+end
 fetch_cells(obj, meta_var, meta_levels) = run(S.fetch_cells, obj, meta_var, asvec(meta_levels))
 get_all_cells(obj) = run(S.all_cells, obj)
 meta_varnames(obj) = run(S.meta_varnames, obj)
@@ -741,6 +763,8 @@ function _precompile_workload()
         SCUBA.fetch_data(src, [feat]; eltype = Float32)
         SCUBA.fetch_feature(src, ["g1", "g2"])
         SCUBA.fetch_matrix(src, ["g1", "g2"]; sparse = true)
+        SCUBA.aggregate(src, Int32[1, 2, 1, 0], 2; layer = "counts")
+        SCUBA.aggregate(src, [1, 1], 1; cells = ["c3", "c1"], features = ["g2"], fun = :mean, cells_per_chunk = 1)
         SCUBA.with_collected_warnings(() -> SCUBA.fetch_data(src, [feat, "nope"]))
         # the R package's entry points (objects arrive from JuliaCall exactly as from reval)
         ScubaR.fetch_data(obj, [feat, "group"], nothing, nothing)
@@ -758,6 +782,8 @@ function _precompile_workload()
         ScubaR.fetch_data(obj, feat, nothing, nothing, "Float64", false, false)
         ScubaR.fetch_feature(obj, ["g1"], nothing, nothing, nothing, "Float64", false)
         ScubaR.fetch_reduction(obj, red, nothing, [1, 2], false)
+        ScubaR.pseudobulk(obj, Int32[1, 2, 1, 2], 2, nothing, "counts", nothing, nothing)
+        ScubaR.pseudobulk(obj, Int32[1, 1], 1, nothing, "counts", ["c2", "c4"], ["g1", "g3"], "mean")
         ScubaR.clear_cache()
     end
     # file-backed path (the R package's scuba_source class)
@@ -772,6 +798,7 @@ function _precompile_workload()
     ScubaR.fetch_reduction(tmp, "X_umap", nothing, [1, 2])
     ScubaR.fetch_data(tmp, ["X_g1"], nothing, nothing, "Float64", false, false)
     ScubaR.fetch_reduction(tmp, "X_umap", nothing, [1, 2], false)
+    ScubaR.pseudobulk(tmp, Int32[1, 2, 1, 0], 2, nothing, nothing, nothing, nothing)
     ScubaR.source_close(tmp)
     reval("if (exists('scuba_pc_tmp')) unlink(scuba_pc_tmp, recursive = TRUE); rm(list = ls(pattern = '^scuba_pc_'))")
     return nothing

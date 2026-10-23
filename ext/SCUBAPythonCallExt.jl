@@ -6,7 +6,7 @@ using SCUBA, PythonCall, DataFrames, CategoricalArrays, SparseArrays, OrderedCol
 using SCUBA: AbstractSingleCellSource, SourceCache, ModalityNotFound, LayerNotFound, ReductionNotFound
 import SCUBA: cell_ids, modality_keys, default_modality, default_layer, feature_names, layer_names,
               expression, metadata_names, metadata_column, reduction_keys, reduction_ndims, reduction,
-              source_name, set_metadata!, invalidate!, pysource
+              source_name, set_metadata!, invalidate!, pysource, aggregate_chunk_cells
 
 const np = PythonCall.pynew()
 const pd = PythonCall.pynew()
@@ -120,6 +120,9 @@ function expression(s::PyAnnDataSource, m::AbstractString, layer::AbstractString
 end
 
 metadata_names(s::PyAnnDataSource) = s.meta
+# Every slice is densified in Python, so `aggregate` reads this source in cell chunks bounded by CHUNK_BYTES.
+aggregate_chunk_cells(s::PyAnnDataSource, ::AbstractString, ::AbstractString, nfeat::Int) =
+    clamp(SCUBA.CHUNK_BYTES[] ÷ (8 * max(1, nfeat)), 1, max(1, length(s.cells)))
 
 function _convert_series(col::Py)
     dtype = col.dtype

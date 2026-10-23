@@ -223,10 +223,15 @@ read_dense_block(store::AbstractStore, ref::MatrixRef, cell_idx::AbstractVector{
 function read_dense_block!(out, store::AbstractStore, ref::MatrixRef,
                            cell_idx::AbstractVector{Int}, feature_idx::AbstractVector{Int})
     colpos = position_lookup(ref.n_var, feature_idx)
-    for run in consecutive_runs(sort(feature_idx))
+    # A feature run is read for every cell (the element is stored feature-major), so a run is split
+    # into sub-runs that stay under MAX_READ_ELEMENTS: an all-feature request (aggregate, a whole
+    # fetch_matrix) would otherwise pull the entire matrix into memory in one hyperslab.
+    step = max(1, MAX_READ_ELEMENTS[] ÷ max(1, ref.n_obs))
+    for run in consecutive_runs(sort(feature_idx)), sub in Iterators.partition(run, step)
+        r = first(sub):last(sub)
         # Julia dims are (n_var, n_obs): rows = features
-        block = store_read(store, ref.path, run, :)           # length(run) × n_obs
-        _scatter_dense!(out, block, run, colpos, cell_idx)
+        block = store_read(store, ref.path, r, :)             # length(r) × n_obs
+        _scatter_dense!(out, block, r, colpos, cell_idx)
     end
     return out
 end

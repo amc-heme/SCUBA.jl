@@ -123,6 +123,23 @@ expression_sparse(src::AbstractSingleCellSource, modality::AbstractString, layer
 _convert_sparse(::Type{T}, A::SparseMatrixCSC) where {T} = eltype(A) === T ? A : SparseMatrixCSC{T,Int}(A)
 """`check_eltype(src, T)` — throw an `ArgumentError` when the backend cannot produce results of element type `T` (default: any `Real`; MuData needs a float for absent cells)."""
 check_eltype(::AbstractSingleCellSource, ::Type{T}) where {T} = nothing
+"""
+    cell_present(src, modality, cell_idx) -> AbstractVector{Bool}
+
+Which of the requested cells hold values in `modality`. Cells absent from a MuData modality are
+not present and do not count towards the cell numbers reported by [`aggregate`](@ref). Default:
+every cell.
+"""
+cell_present(::AbstractSingleCellSource, ::AbstractString, cell_idx::AbstractVector{Int}) = trues(length(cell_idx))
+"""
+    aggregate_chunk_cells(src, modality, layer, nfeat) -> Union{Nothing,Int}
+
+Cells per chunk that [`aggregate`](@ref) should request at a time from this backend, or `nothing`
+(default) to stream the whole request through one `expression!` call. Backends that materialise
+every slice through a host process (the R and Python bridges) return a chunk size derived from
+[`CHUNK_BYTES`](@ref) so the slice never exceeds that budget.
+"""
+aggregate_chunk_cells(::AbstractSingleCellSource, ::AbstractString, ::AbstractString, nfeat::Int) = nothing
 """`reduction_aliases(src) -> Dict{String,String}` — extra names under which reductions may be addressed (alias => canonical key)."""
 reduction_aliases(src::AbstractSingleCellSource) = Dict{String,String}()
 """`reduction_search_names(src, key)` — names under which [`default_reduction`](@ref) recognises a reduction (default: the key only; the Seurat bridge adds the reduction name)."""

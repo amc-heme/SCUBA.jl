@@ -25,12 +25,23 @@ using PythonCall
         @test fetch_data(src, ["X_UNG"]; layer = "counts") == fetch_data(ref, ["X_UNG"]; layer = "counts")
         sub = all_cells(ref)[[9, 1, 250]]
         @test fetch_data(src, ["GAPDH", "X_umap_1"]; cells = sub) == fetch_data(ref, ["GAPDH", "X_umap_1"]; cells = sub)
+        # aggregate: Python slices are dense, so the source is read in CHUNK_BYTES-bounded cell chunks
+        ct = string.(fetch_data(ref, ["condensed_cell_type"]).condensed_cell_type)
+        lv = sort(unique(ct)); codes = Int32[findfirst(==(c), lv) for c in ct]
+        ind = zeros(250, length(lv)); for (i, g) in enumerate(codes); ind[i, g] = 1.0; end
+        want_counts = ind' * Matrix(fetch_matrix(ref, nothing; layer = "counts", sparse = true)[1])
+        @test SCUBA.aggregate_chunk_cells(src, "X", "counts", 462) isa Int
+        V, n, = aggregate(src, codes, length(lv); layer = "counts")
+        @test V ≈ want_counts && n == vec(sum(ind; dims = 1))
+        @test aggregate(src, codes, length(lv); layer = "counts", cells_per_chunk = 9)[1] ≈ want_counts
+        @test aggregate(src, codes, length(lv); modality = "protein")[1] ≈ ind' * Matrix(fetch_matrix(ref, nothing; modality = "protein")[1])
 
         @testset "backed mode" begin
             backed = ad.read_h5ad(h5; backed = "r")
             bs = pysource(backed)
             @test fetch_data(bs, ["X_GAPDH", "X_UNG"]) == fetch_data(ref, ["X_GAPDH", "X_UNG"])
             @test fetch_data(bs, ["X_GAPDH"]; cells = sub) == fetch_data(ref, ["X_GAPDH"]; cells = sub)
+            @test aggregate(bs, codes, length(lv); layer = "counts")[1] ≈ want_counts
             backed.file.close()
         end
 

@@ -24,6 +24,10 @@ call works unchanged on every backend:
 | live Seurat / SingleCellExperiment object | `rsource(obj)` | `using RCall` |
 | live `anndata.AnnData` | `pysource(adata)` | `using PythonCall` |
 
+`aggregate(src, codes, ngroups; layer = "counts")` sums a layer over groups of cells (pseudobulk
+profiles) by streaming every backend into a group accumulator, so the cells × features block is
+never held in memory.
+
 SCUBA.jl reimplements the R package [SCUBA](https://github.com/amc-heme/SCUBA) (Showers et al.
 2024, *F1000Research*) with a single, backend-independent implementation of the variable
 resolution rules. It is the engine behind SCUBA for R (v2, through JuliaCall) and the `scuba`

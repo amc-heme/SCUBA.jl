@@ -5,6 +5,16 @@ using RCall
     ref = open_h5ad(h5)
     vars_h5 = ["X_GAPDH", "protein_CD117-AB", "X_umap_1", "X_umap_2", "Batch", "nCount_RNA", "condensed_cell_type"]
     want = fetch_data(ref, vars_h5)
+    # pseudobulk reference: counts summed per condensed_cell_type (sorted level order)
+    ct = string.(fetch_data(ref, ["condensed_cell_type"]).condensed_cell_type)
+    ct_levels = sort(unique(ct)); ng = length(ct_levels)
+    ct_codes = Int32[findfirst(==(c), ct_levels) for c in ct]
+    ind = zeros(Float64, length(ct), ng); for (i, g) in enumerate(ct_codes); ind[i, g] = 1.0; end
+    fsh = features_in_modality(ref)
+    want_counts = ind' * Matrix(fetch_matrix(ref, nothing; layer = "counts", sparse = true)[1])
+    want_n = vec(sum(ind; dims = 1))
+    align(V, fs) = V[:, [findfirst(==(f), fs) for f in fsh]]
+    ScubaR = Base.get_extension(SCUBA, :SCUBARCallExt).ScubaR
 
     function compare(df)
         @test df.cell == want.cell
@@ -35,6 +45,22 @@ using RCall
             counts = fetch_data(src, ["rna_GAPDH"]; layer = "counts").rna_GAPDH
             @test counts == fetch_data(ref, ["X_GAPDH"]; layer = "counts").X_GAPDH
             @test_throws ReadOnlySource set_metadata!(src, fetch_metadata(src))
+            # aggregate: dgCMatrix layer scattered from R memory, in cell chunks bounded by CHUNK_BYTES
+            V, n, fs, = aggregate(src, ct_codes, ng; layer = "counts")
+            @test align(V, fs) ≈ want_counts && n == want_n
+            @test SCUBA.aggregate_chunk_cells(src, "rna", "counts", length(fs)) isa Int
+            old = SCUBA.CHUNK_BYTES[]; SCUBA.CHUNK_BYTES[] = 8 * length(fs) * 17     # 17 cells per chunk
+            try
+                @test align(aggregate(src, ct_codes, ng; layer = "counts")[1], fs) ≈ want_counts
+            finally
+                SCUBA.CHUNK_BYTES[] = old
+            end
+            # the R package's entry point: features × groups dense matrix
+            pb = ScubaR.pseudobulk(reval("AML_Seurat"), ct_codes, ng, "RNA", "counts", nothing, nothing)
+            @test align(permutedims(pb.values), pb.features) ≈ want_counts && pb.n == want_n
+            pbm = ScubaR.pseudobulk(reval("AML_Seurat"), Int32[1, 2, 1], 2, nothing, "counts", all_cells(ref)[[3, 1, 2]], ["GAPDH"], "mean")
+            g = fetch_data(ref, ["X_GAPDH"]; layer = "counts", cells = all_cells(ref)[[3, 1, 2]]).X_GAPDH
+            @test vec(pbm.values) ≈ [(g[1] + g[3]) / 2, g[2]] && pbm.n == [2, 1] && pbm.features == ["GAPDH"]
         end
     else
         @warn "SeuratObject not installed in R; skipping Seurat bridge tests"
@@ -58,6 +84,12 @@ using RCall
             df = fetch_data(src, ["rna_GAPDH", "ab_CD117-AB", "UMAP_1", "UMAP_2", "Batch", "nCount_RNA", "condensed_cell_type"])
             compare(df)
             @test fetch_data(src, ["rna_UNG"]; layer = "counts").rna_UNG == fetch_data(ref, ["X_UNG"]; layer = "counts").X_UNG
+            # aggregate streams the native BPCells layer (no chunking through R)
+            @test SCUBA.aggregate_chunk_cells(src, "rna", "counts", 462) === nothing
+            V, n, fs, = aggregate(src, ct_codes, ng; layer = "counts")
+            @test align(V, fs) ≈ want_counts && n == want_n
+            pb = ScubaR.pseudobulk(reval("AML_BPCells"), ct_codes, ng, "rna", "counts", nothing, nothing)
+            @test align(permutedims(pb.values), pb.features) ≈ want_counts
         end
     end
 
@@ -76,6 +108,12 @@ using RCall
             @test fetch_data(src, ["RNA_GAPDH"]; layer = "counts").RNA_GAPDH == fetch_data(ref, ["X_GAPDH"]; layer = "counts").X_GAPDH
             # single reduction dimension works (the R package mishandled this on SCE)
             @test names(fetch_data(src, ["UMAP_1"])) == ["cell", "UMAP_1"]
+            # aggregate over an HDF5Array-backed assay: slices are densified in R, so they are chunked
+            @test SCUBA.aggregate_chunk_cells(src, "RNA", "counts", 462) isa Int
+            V, n, fs, = aggregate(src, ct_codes, ng; layer = "counts")
+            @test align(V, fs) ≈ want_counts && n == want_n
+            pb = ScubaR.pseudobulk(reval("AML_SCE"), ct_codes, ng, "RNA", "counts", nothing, nothing)
+            @test align(permutedims(pb.values), pb.features) ≈ want_counts
         end
     else
         @warn "SingleCellExperiment/HDF5Array not installed in R; skipping SCE bridge tests"
@@ -131,6 +169,17 @@ end
         @test ScubaR.fetch_reduction(h5, "X_umap", nothing, [1, 2], false).cells === nothing
         fm = ScubaR.fetch_matrix(h5, ["GAPDH"], nothing, nothing, nothing, true, "Float64", false)
         @test fm.cells === nothing && fm.dim == [1, 250]
+        # pseudobulk over the file-backed path: R computes the codes, Julia returns features × groups
+        ct = string.(fetch_data(open_h5ad(h5), ["condensed_cell_type"]).condensed_cell_type)
+        lv = sort(unique(ct)); codes = Int32[findfirst(==(c), lv) for c in ct]
+        ind = zeros(250, length(lv)); for (i, g) in enumerate(codes); ind[i, g] = 1.0; end
+        r2 = open_h5ad(h5)
+        pb = ScubaR.pseudobulk(h5, codes, length(lv), nothing, "counts", nothing, nothing)
+        @test pb.values ≈ permutedims(ind' * Matrix(fetch_matrix(r2, nothing; layer = "counts", sparse = true)[1]))
+        @test pb.n == vec(sum(ind; dims = 1)) && pb.features == features_in_modality(r2) && pb.warnings == String[]
+        pbp = ScubaR.pseudobulk(h5, codes, length(lv), "protein", nothing, nothing, ["CD117-AB"], "mean")
+        @test size(pbp.values) == (1, length(lv)) && pbp.features == ["CD117-AB"]
+        close(r2)
         @test ScubaR.fetch_data(h5, ["Batch"], nothing, ["39207_1"], "Float64", true, false).cells === nothing
         # metadata is owned by R: a metadata name is not found in Julia; allow_empty yields an empty table
         empty = ScubaR.fetch_data(h5, ["Batch"], nothing, ["39207_1"], "Float64", true)

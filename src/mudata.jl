@@ -169,6 +169,8 @@ function _mark_absent!(cols::Vector{<:AbstractVector}, rows, nf::Int)
     return cols
 end
 _mark_absent!(s::SparseSink, rows, nf::Int) = s
+_mark_absent!(s::GroupSumSink, rows, nf::Int) = s          # absent cells add nothing to a group sum
+cell_present(src::MuDataSource, m::AbstractString, cidx::AbstractVector{Int}) = _mm(src, m).obsmap[cidx] .!= 0
 
 function expression!(out, src::MuDataSource, m::AbstractString, layer::AbstractString,
                      fidx::AbstractVector{Int}, cidx::AbstractVector{Int})

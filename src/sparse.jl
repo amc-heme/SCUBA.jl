@@ -69,6 +69,29 @@ struct RowMapSink{S}
 end
 @inline _put!(s::RowMapSink, i::Int, j::Int, v) = _put!(s.inner, s.rows[i], j, v)
 
+"""
+    GroupSumSink(T, codes, ngroups, nfeat)
+
+Reduction sink for [`aggregate`](@ref): `_put!(s, i, j, v)` adds `v` to `acc[codes[i], j]`, where
+`codes[i]` is the 1-based group of the cell at position `i` of the request being written (`0`
+skips the cell). The cells × features block is never materialised: every backend's `expression!`
+streams straight into the `ngroups × nfeat` accumulator, which is all the memory a pseudobulk
+profile needs. `GroupSumSink{T}(acc, codes)` wraps an existing accumulator so a request can be
+written in several cell chunks (each with its own slice of `codes`).
+"""
+struct GroupSumSink{T}
+    acc::Matrix{T}            # ngroups × nfeat
+    codes::Vector{Int32}      # group per cell position of the current request
+end
+GroupSumSink(::Type{T}, codes::AbstractVector{<:Integer}, ngroups::Integer, nfeat::Integer) where {T} =
+    GroupSumSink{T}(zeros(T, Int(ngroups), Int(nfeat)), Vector{Int32}(codes))
+@inline function _put!(s::GroupSumSink, i::Int, j::Int, v)
+    @inbounds g = s.codes[i]
+    g == 0 && return nothing
+    @inbounds s.acc[g, j] += v
+    return nothing
+end
+
 """`position_lookup(n, idx)` — vector `pos` with `pos[idx[k]] = k` and 0 elsewhere."""
 function position_lookup(n::Integer, idx::AbstractVector{Int})
     pos = zeros(Int, n)
