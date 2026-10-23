@@ -251,15 +251,6 @@ function fetch_feature(src::AbstractSingleCellSource, features::AbstractVector{<
 end
 fetch_feature(src::AbstractSingleCellSource, feature::AbstractString; kw...) = fetch_feature(src, [feature]; kw...)
 
-"""
-    fetch_matrix(src, features; modality=nothing, layer=nothing, cells=nothing, sparse=false)
-        -> (X, cells, features)
-
-Expression block (cells × features) as a plain `Matrix{eltype}` or, with `sparse=true`, a
-`SparseMatrixCSC{eltype}`. Intended for statistics-heavy consumers (dot plots, heatmaps).
-`features === nothing` selects every feature of the modality. Dense results are subject to the
-`MAX_DENSE_BYTES` guard; sparse results are not.
-"""
 # Resolve a whole-modality (`features === nothing`) or explicit feature request to one
 # (modality, layer, feature indices, feature names) tuple; shared by `fetch_matrix` and `aggregate`.
 function _resolve_matrix_request(src, features, modality, layer)
@@ -270,6 +261,15 @@ function _resolve_matrix_request(src, features, modality, layer)
     return mod, lay, collect(1:length(names)), names
 end
 
+"""
+    fetch_matrix(src, features; modality=nothing, layer=nothing, cells=nothing, sparse=false)
+        -> (X, cells, features)
+
+Expression block (cells × features) as a plain `Matrix{eltype}` or, with `sparse=true`, a
+`SparseMatrixCSC{eltype}`. Intended for statistics-heavy consumers (dot plots, heatmaps).
+`features === nothing` selects every feature of the modality. Dense results are subject to the
+`MAX_DENSE_BYTES` guard; sparse results are not.
+"""
 function fetch_matrix(src::AbstractSingleCellSource, features = nothing;
                       modality = nothing, layer = nothing, cells = nothing, sparse::Bool = false,
                       eltype::Type{<:Real} = Float64)
@@ -302,7 +302,7 @@ feature names and the cell names. `features === nothing` covers every feature of
 The cells × features block is never built: each backend's `expression!` streams into a
 [`GroupSumSink`](@ref), so the memory cost is the accumulator plus the backend's own read buffer
 (h5ad reads are bounded by `MAX_READ_ELEMENTS`, BPCells decodes one chunk at a time). Backends that
-slice through a host process (R, Python) are read in cell chunks sized by [`CHUNK_BYTES`](@ref)
+slice through a host process (R, Python) are read in cell chunks sized by `CHUNK_BYTES`
 (see [`aggregate_chunk_cells`](@ref)); `cells_per_chunk` overrides the chunk size on any backend.
 """
 function aggregate(src::AbstractSingleCellSource, codes::AbstractVector{<:Integer}, ngroups::Integer;

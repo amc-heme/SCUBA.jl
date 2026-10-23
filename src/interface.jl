@@ -137,7 +137,7 @@ cell_present(::AbstractSingleCellSource, ::AbstractString, cell_idx::AbstractVec
 Cells per chunk that [`aggregate`](@ref) should request at a time from this backend, or `nothing`
 (default) to stream the whole request through one `expression!` call. Backends that materialise
 every slice through a host process (the R and Python bridges) return a chunk size derived from
-[`CHUNK_BYTES`](@ref) so the slice never exceeds that budget.
+`CHUNK_BYTES` so the slice never exceeds that budget.
 """
 aggregate_chunk_cells(::AbstractSingleCellSource, ::AbstractString, ::AbstractString, nfeat::Int) = nothing
 """`reduction_aliases(src) -> Dict{String,String}` — extra names under which reductions may be addressed (alias => canonical key)."""
