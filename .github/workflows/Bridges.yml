@@ -53,7 +53,11 @@ jobs:
         continue-on-error: true
         shell: bash
         run: |
+          set +e +o pipefail
           julia -e 'using Pkg; Pkg.activate("/tmp/rc"); Pkg.add("RCall")' > /dev/null 2>&1
+          echo "== Rscript"; Rscript -e 'cat(R.version.string, "\n")'; echo "exit=$?"
+          echo "== julia -e 1"; julia --project=/tmp/rc -e 'println("julia ok")'; echo "exit=$?"
+          echo "== using RCall only"; julia --project=/tmp/rc -e 'using RCall; println("loaded")'; echo "exit=$?"
           sudo apt-get install -y -qq strace > /dev/null
           T='using RCall; println("R says: ", rcopy(R"1+1"))'
           echo "== A: plain"
