@@ -48,6 +48,18 @@ jobs:
             any::BPCells
           cache-version: 2
       - uses: julia-actions/julia-buildpkg@v1
+      - name: R / RCall diagnostics (Linux)
+        if: runner.os == 'Linux'
+        continue-on-error: true
+        run: |
+          set -x
+          R RHOME; RH=$(R RHOME)
+          ldd "$RH/lib/libR.so" | grep -E 'not found|blas|lapack|stdc|gfortran' || true
+          julia -e 'using Pkg; Pkg.activate(temp = true); Pkg.add("RCall")' > /dev/null 2>&1
+          cat $(julia -e 'print(dirname(Base.find_package("RCall")))' 2>/dev/null)/../deps/deps.jl 2>/dev/null || find ~/.julia/packages/RCall -name deps.jl -exec cat {} \;
+          sudo apt-get install -y -qq strace > /dev/null
+          strace -f -e trace=exit_group,openat -o /tmp/st.txt julia -e 'using Pkg; Pkg.activate(temp = true); Pkg.add("RCall"); using RCall; println(rcopy(R"1+1"))'; echo "exit=$?"
+          grep -E 'exit_group|ENOENT.*(libR|lib/R|Rblas|Rlapack|\.so)' /tmp/st.txt | grep -v 'julia/lib\|python' | tail -25
       - name: RCall smoke test (diagnostic)
         continue-on-error: true
         run: julia -e 'using Pkg; Pkg.activate(temp = true); Pkg.add("RCall"); using RCall; println(rcopy(R"R.version.string")); println(rcopy(R"as.character(packageVersion(\"SeuratObject\"))"))'
