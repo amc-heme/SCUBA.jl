@@ -51,15 +51,22 @@ jobs:
       - name: R / RCall diagnostics (Linux)
         if: runner.os == 'Linux'
         continue-on-error: true
+        shell: bash
         run: |
-          set -x
-          R RHOME; RH=$(R RHOME)
-          ldd "$RH/lib/libR.so" | grep -E 'not found|blas|lapack|stdc|gfortran' || true
-          julia -e 'using Pkg; Pkg.activate(temp = true); Pkg.add("RCall")' > /dev/null 2>&1
-          cat $(julia -e 'print(dirname(Base.find_package("RCall")))' 2>/dev/null)/../deps/deps.jl 2>/dev/null || find ~/.julia/packages/RCall -name deps.jl -exec cat {} \;
+          julia -e 'using Pkg; Pkg.activate("/tmp/rc"); Pkg.add("RCall")' > /dev/null 2>&1
           sudo apt-get install -y -qq strace > /dev/null
-          strace -f -e trace=exit_group,openat -o /tmp/st.txt julia -e 'using Pkg; Pkg.activate(temp = true); Pkg.add("RCall"); using RCall; println(rcopy(R"1+1"))'; echo "exit=$?"
-          grep -E 'exit_group|ENOENT.*(libR|lib/R|Rblas|Rlapack|\.so)' /tmp/st.txt | grep -v 'julia/lib\|python' | tail -25
+          T='using RCall; println("R says: ", rcopy(R"1+1"))'
+          echo "== A: plain"
+          julia --project=/tmp/rc -e "$T" 2>&1 | tail -15; echo "exit=${PIPESTATUS[0]}"
+          echo "== B: LD_PRELOAD system libstdc++ / libgfortran"
+          LD_PRELOAD=/lib/x86_64-linux-gnu/libstdc++.so.6:/lib/x86_64-linux-gnu/libgfortran.so.5 julia --project=/tmp/rc -e "$T" 2>&1 | tail -15; echo "exit=${PIPESTATUS[0]}"
+          echo "== C: no LD_LIBRARY_PATH"
+          env -u LD_LIBRARY_PATH julia --project=/tmp/rc -e "$T" 2>&1 | tail -15; echo "exit=${PIPESTATUS[0]}"
+          echo "== strace (plain)"
+          strace -f -e trace=exit_group,openat,write -s 200 -o /tmp/st.txt julia --project=/tmp/rc -e "$T" > /dev/null 2>&1 || true
+          grep -nE 'exit_group' /tmp/st.txt | head -5
+          grep -E 'openat.*(libR|Rblas|Rlapack|libstdc|gfortran|openblas)' /tmp/st.txt | tail -12
+          grep -E 'write\(2,' /tmp/st.txt | tail -15
       - name: RCall smoke test (diagnostic)
         continue-on-error: true
         run: julia -e 'using Pkg; Pkg.activate(temp = true); Pkg.add("RCall"); using RCall; println(rcopy(R"R.version.string")); println(rcopy(R"as.character(packageVersion(\"SeuratObject\"))"))'
