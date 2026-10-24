@@ -48,8 +48,15 @@ jobs:
             any::BPCells
           cache-version: 2
       - uses: julia-actions/julia-buildpkg@v1
-      - name: Run bridge tests
-        run: julia --project=. -e 'using Pkg; Pkg.test(test_args=["bridges"])'
+      - name: RCall smoke test (diagnostic)
+        continue-on-error: true
+        run: julia -e 'using Pkg; Pkg.activate(temp = true); Pkg.add("RCall"); using RCall; println(rcopy(R"R.version.string")); println(rcopy(R"as.character(packageVersion(\"SeuratObject\"))"))'
+      # Separate processes: libR and libpython are not loaded into the same Julia process.
+      - name: Run Zarr + PythonCall bridge tests
+        run: julia --project=. -e 'using Pkg; Pkg.test(test_args=["bridges", "only=zarr,pythoncall"])'
         env:
           JULIA_CONDAPKG_BACKEND: Null
           JULIA_PYTHONCALL_EXE: python
+      - name: Run RCall bridge tests
+        if: success() || failure()
+        run: julia --project=. -e 'using Pkg; Pkg.test(test_args=["bridges", "only=rcall"])'
