@@ -29,15 +29,19 @@ jobs:
       - uses: r-lib/actions/setup-r@v2
         with:
           use-public-rspm: true
-      - name: Install R packages
-        run: |
-          Rscript -e 'install.packages(c("BiocManager", "Seurat", "jsonlite"), repos = "https://cloud.r-project.org")'
-          Rscript -e 'BiocManager::install(c("SingleCellExperiment", "HDF5Array"), ask = FALSE, update = FALSE)'
-          Rscript -e 'install.packages("BPCells", repos = c("https://bnprks.r-universe.dev", "https://cloud.r-project.org"))' || true
+      # pak: RSPM binaries on Linux, Bioconductor via bioc::, system requirements installed via apt
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          packages: |
+            any::Seurat
+            any::jsonlite
+            bioc::SingleCellExperiment
+            bioc::HDF5Array
+            bnprks/BPCells/r
+          cache-version: 1
       - uses: julia-actions/julia-buildpkg@v1
       - name: Run bridge tests
         run: julia --project=. -e 'using Pkg; Pkg.test(test_args=["bridges"])'
         env:
           JULIA_CONDAPKG_BACKEND: Null
           JULIA_PYTHONCALL_EXE: python
-          R_HOME: ${{ env.R_HOME }}

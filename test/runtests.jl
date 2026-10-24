@@ -21,6 +21,15 @@ include("test_aggregate.jl")
 include("test_golden.jl")
 
 if RUN_BRIDGES
+    # RCall / PythonCall are not part of the test target (installing RCall without R falls back to
+    # Conda, which is slow and breaks on nightly). Add the requested bridges to the sandboxed test
+    # environment on demand; SCUBA's [compat] bounds still apply.
+    using Pkg
+    let want = String[]
+        "rcall" in BRIDGE_SET && push!(want, "RCall")
+        "pythoncall" in BRIDGE_SET && push!(want, "PythonCall")
+        isempty(want) || Pkg.add(want)
+    end
     "zarr" in BRIDGE_SET && include("bridges/test_zarr.jl")
     "pythoncall" in BRIDGE_SET && include("bridges/test_pythoncall.jl")
     "rcall" in BRIDGE_SET && include("bridges/test_rcall.jl")

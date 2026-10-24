@@ -38,6 +38,7 @@ Python package in `python/` (through juliacall).
 ```
 julia --project=. -e 'using Pkg; Pkg.test()'                                   # core tests
 julia --project=. -e 'using Pkg; Pkg.test(test_args=["bridges"])'               # + Zarr / R / Python bridges
+# (the bridge run adds RCall / PythonCall to the test sandbox itself; `only=rcall,zarr` limits it)
 ```
 
 Bridge tests need R with SeuratObject, SingleCellExperiment and HDF5Array (BPCells optional) and
