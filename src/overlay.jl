@@ -48,6 +48,8 @@ reduction_dimnames_impl(o::MetadataOverlay, k::AbstractString, dims::AbstractVec
 reduction_search_names(o::MetadataOverlay, k::AbstractString) = reduction_search_names(o.inner, k)
 reduction_aliases(o::MetadataOverlay) = reduction_aliases(o.inner)
 check_eltype(o::MetadataOverlay, ::Type{T}) where {T} = check_eltype(o.inner, T)
+cell_present(o::MetadataOverlay, m::AbstractString, cidx::AbstractVector{Int}) = cell_present(o.inner, m, cidx)
+aggregate_chunk_cells(o::MetadataOverlay, m::AbstractString, l::AbstractString, nfeat::Int) = aggregate_chunk_cells(o.inner, m, l, nfeat)
 canonical_modality(o::MetadataOverlay, name::AbstractString) = canonical_modality(o.inner, name)
 canonical_reduction(o::MetadataOverlay, name::AbstractString) = canonical_reduction(o.inner, name)
 cache(o::MetadataOverlay) = cache(o.inner)

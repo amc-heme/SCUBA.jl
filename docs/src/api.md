@@ -7,6 +7,7 @@ fetch_data
 fetch_feature
 fetch_matrix
 eachchunk
+aggregate
 fetch_metadata
 fetch_reduction
 fetch_cells
@@ -43,6 +44,18 @@ pysource
 open_zarr
 ```
 
+## Sinks
+
+Every backend writes expression values through `SCUBA._put!(sink, i, j, v)`; the sink decides what
+to keep. A dense matrix or a vector of per-feature columns keeps everything, `SparseSink` keeps
+the nonzeros, and `GroupSumSink` keeps only group sums.
+
+```@docs
+SCUBA.SparseSink
+SCUBA.RowMapSink
+GroupSumSink
+```
+
 ## Backend interface
 
 ```@docs
@@ -50,11 +63,14 @@ SCUBA.cell_ids
 SCUBA.modality_keys
 SCUBA.default_layer
 SCUBA.expression
+SCUBA.expression!
 SCUBA.metadata_column
 SCUBA.reduction
 SCUBA.resolve_layer
 SCUBA.canonical_modality
 SCUBA.canonical_reduction
+SCUBA.cell_present
+SCUBA.aggregate_chunk_cells
 ```
 
 ## Errors and warnings

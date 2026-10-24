@@ -251,6 +251,16 @@ function fetch_feature(src::AbstractSingleCellSource, features::AbstractVector{<
 end
 fetch_feature(src::AbstractSingleCellSource, feature::AbstractString; kw...) = fetch_feature(src, [feature]; kw...)
 
+# Resolve a whole-modality (`features === nothing`) or explicit feature request to one
+# (modality, layer, feature indices, feature names) tuple; shared by `fetch_matrix` and `aggregate`.
+function _resolve_matrix_request(src, features, modality, layer)
+    features === nothing || return _resolve_features(src, features, modality, layer)
+    mod = modality === nothing ? default_modality(src) : check_modality(src, modality)
+    lay = resolve_layer(src, mod, layer)
+    names = collect(String, feature_names(src, mod))
+    return mod, lay, collect(1:length(names)), names
+end
+
 """
     fetch_matrix(src, features; modality=nothing, layer=nothing, cells=nothing, sparse=false)
         -> (X, cells, features)
@@ -264,14 +274,7 @@ function fetch_matrix(src::AbstractSingleCellSource, features = nothing;
                       modality = nothing, layer = nothing, cells = nothing, sparse::Bool = false,
                       eltype::Type{<:Real} = Float64)
     _check_eltype(src, eltype, sparse)
-    if features === nothing
-        mod = modality === nothing ? default_modality(src) : check_modality(src, modality)
-        lay = resolve_layer(src, mod, layer)
-        names = collect(String, feature_names(src, mod))
-        idx = collect(1:length(names))
-    else
-        mod, lay, idx, names = _resolve_features(src, features, modality, layer)
-    end
+    mod, lay, idx, names = _resolve_matrix_request(src, features, modality, layer)
     cell_idx, cell_names = resolve_cells(src, cells)
     if sparse
         X = expression_sparse(src, mod, lay, idx, cell_idx, eltype)
@@ -280,6 +283,69 @@ function fetch_matrix(src::AbstractSingleCellSource, features = nothing;
         X = _dense_block(src, mod, lay, idx, cell_idx, eltype)
     end
     return X, cell_names, names
+end
+
+# ---------------------------------------------------------------------------
+# aggregate: group sums without materialising the block (pseudobulk)
+
+"""
+    aggregate(src, codes, ngroups; modality=nothing, layer=nothing, cells=nothing, features=nothing,
+              fun=:sum, cells_per_chunk=nothing) -> (values, n, features, cells)
+
+Sum (`fun = :sum`) or average (`fun = :mean`) every feature of a layer over groups of cells, as
+needed for pseudobulk profiles. `codes[k]` is the 1-based group of the `k`-th requested cell (in
+`cells` order, or object order when `cells === nothing`); `0` leaves a cell out. Returns the
+`ngroups × features` `Matrix{Float64}` of group values, the number of cells that contributed to
+each group (cells absent from a MuData modality do not count, see [`cell_present`](@ref)), the
+feature names and the cell names. `features === nothing` covers every feature of the modality.
+
+The cells × features block is never built: each backend's `expression!` streams into a
+[`GroupSumSink`](@ref), so the memory cost is the accumulator plus the backend's own read buffer
+(h5ad reads are bounded by `MAX_READ_ELEMENTS`, BPCells decodes one chunk at a time). Backends that
+slice through a host process (R, Python) are read in cell chunks sized by `CHUNK_BYTES`
+(see [`aggregate_chunk_cells`](@ref)); `cells_per_chunk` overrides the chunk size on any backend.
+"""
+function aggregate(src::AbstractSingleCellSource, codes::AbstractVector{<:Integer}, ngroups::Integer;
+                   modality = nothing, layer = nothing, cells = nothing, features = nothing, fun::Symbol = :sum,
+                   cells_per_chunk::Union{Nothing,Integer} = nothing)
+    fun in (:sum, :mean) || throw(ArgumentError("fun must be :sum or :mean, got :$fun"))
+    ng = Int(ngroups)
+    ng >= 0 || throw(ArgumentError("ngroups must be non-negative, got $ng"))
+    mod, lay, fidx, names = _resolve_matrix_request(src, features, modality, layer)
+    cell_idx, cell_names = resolve_cells(src, cells)
+    length(codes) == length(cell_idx) ||
+        throw(ArgumentError("codes has $(length(codes)) entries for $(length(cell_idx)) cells"))
+    c32 = Vector{Int32}(codes)
+    @inbounds for g in c32
+        0 <= g <= ng || throw(ArgumentError("group codes must be in 0:$ng, got $g"))
+    end
+    est = 8 * length(fidx) * ng
+    est > MAX_DENSE_BYTES[] && scuba_warn(:large_result,
+        "The aggregated result is large (~$(round(est / 2^30; digits = 1)) GiB dense for $ng groups × " *
+        "$(length(fidx)) features). Consider fewer features or fewer groups.")
+    present = cell_present(src, mod, cell_idx)
+    n = zeros(Int, ng)
+    @inbounds for (k, g) in enumerate(c32)
+        g != 0 && present[k] && (n[g] += 1)
+    end
+    acc = zeros(Float64, ng, length(fidx))
+    step = cells_per_chunk === nothing ? aggregate_chunk_cells(src, mod, lay, length(fidx)) : max(1, Int(cells_per_chunk))
+    if step === nothing || step >= length(cell_idx)
+        expression!(GroupSumSink{Float64}(acc, c32), src, mod, lay, fidx, cell_idx)
+    else
+        for r in Iterators.partition(1:length(cell_idx), step)
+            expression!(GroupSumSink{Float64}(acc, c32[r]), src, mod, lay, fidx, cell_idx[r])
+        end
+    end
+    if fun === :mean
+        @inbounds for g in 1:ng
+            d = max(n[g], 1)
+            for j in 1:length(fidx)
+                acc[g, j] /= d
+            end
+        end
+    end
+    return acc, n, names, cell_names
 end
 
 # ---------------------------------------------------------------------------

@@ -17,6 +17,7 @@ include("test_h5mu.jl")
 include("test_memory.jl")
 include("test_overlay.jl")
 include("test_bpcells.jl")
+include("test_aggregate.jl")
 include("test_golden.jl")
 
 if RUN_BRIDGES

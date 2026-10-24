@@ -21,6 +21,26 @@ metadata and reduction columns are small and still copied. Cell names never cros
 (the R side already holds them), and `fetch_matrix` returns the sparse pieces of a features × cells
 `dgCMatrix`. For 1000 genes × 1M cells this brings the R process peak from ~18.6 GB to ~11–12 GB.
 
+## Aggregation (pseudobulk)
+
+`aggregate(src, codes, ngroups; layer = "counts")` sums (or averages) every feature over groups of
+cells. Nothing the size of cells × features is ever built: the request is written into a
+`GroupSumSink` (an `ngroups × features` accumulator) through the same `expression!` method every
+backend already implements. The cost is therefore the backend's own streaming read:
+
+| Source | How the layer is walked |
+|---|---|
+| `.h5ad` / zarr csr | runs of consecutive cells, each read bounded by `SCUBA.MAX_READ_ELEMENTS` (all features of a cell arrive together) |
+| `.h5ad` / zarr csc | runs of consecutive features, bounded the same way |
+| `.h5ad` / zarr dense | feature sub-runs sized so a read stays under `MAX_READ_ELEMENTS` |
+| BPCells directory | compressed chunks decoded once, in storage order |
+| MuData | the child modality, with cells absent from the modality skipped and not counted (`cell_present`) |
+| `rsource` / `pysource` | slices still go through R / Python, so the request is split into cell chunks bounded by `SCUBA.CHUNK_BYTES` (`aggregate_chunk_cells`); native BPCells layers of a Seurat object stream instead |
+
+The R package's `pseudobulk()` calls the `ScubaR.pseudobulk` glue entry point, which returns the
+features × groups accumulator as a plain dense R matrix: no sparse index vectors cross the bridge
+and the `Int32` nonzero limit of `fetch_matrix` does not apply.
+
 ## Writing a backend
 
 Subtype `AbstractSingleCellSource` and implement the required methods listed in its docstring.
