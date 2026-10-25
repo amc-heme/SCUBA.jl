@@ -29,15 +29,38 @@ jobs:
       - uses: r-lib/actions/setup-r@v2
         with:
           use-public-rspm: true
-      - name: Install R packages
-        run: |
-          Rscript -e 'install.packages(c("BiocManager", "Seurat", "jsonlite"), repos = "https://cloud.r-project.org")'
-          Rscript -e 'BiocManager::install(c("SingleCellExperiment", "HDF5Array"), ask = FALSE, update = FALSE)'
-          Rscript -e 'install.packages("BPCells", repos = c("https://bnprks.r-universe.dev", "https://cloud.r-project.org"))' || true
+          extra-repositories: https://bnprks.r-universe.dev   # BPCells binaries
+      # BPCells links against the system HDF5 on Linux (r-universe binary or source build)
+      - name: System HDF5 (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libhdf5-dev
+      # pak: RSPM / Bioconductor binaries, BPCells binaries from r-universe, apt system requirements.
+      # Hard dependencies only: the default ("all") also installs Suggests, which pulled in
+      # alabaster.* source builds that fail to link on macOS.
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          dependencies: '"hard"'
+          packages: |
+            any::Seurat
+            any::jsonlite
+            bioc::SingleCellExperiment
+            bioc::HDF5Array
+            any::BPCells
+          cache-version: 2
       - uses: julia-actions/julia-buildpkg@v1
-      - name: Run bridge tests
-        run: julia --project=. -e 'using Pkg; Pkg.test(test_args=["bridges"])'
+      # Embedded R (RCall) does not run R's ldpaths script, so libR.so in $R_HOME/lib is not on the
+      # loader path on Linux and R start-up aborts silently. Add it (R's own recommended value).
+      - name: R library path for embedded R (Linux)
+        if: runner.os == 'Linux'
+        run: echo "LD_LIBRARY_PATH=$(R RHOME)/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+      - name: RCall smoke test
+        run: julia -e 'using Pkg; Pkg.activate(temp = true); Pkg.add("RCall"); using RCall; println(rcopy(R"R.version.string")); println(rcopy(R"as.character(packageVersion(\"SeuratObject\"))"))'
+      # Separate processes: libR and libpython are not loaded into the same Julia process.
+      - name: Run Zarr + PythonCall bridge tests
+        run: julia --project=. -e 'using Pkg; Pkg.test(test_args=["bridges", "only=zarr,pythoncall"])'
         env:
           JULIA_CONDAPKG_BACKEND: Null
           JULIA_PYTHONCALL_EXE: python
-          R_HOME: ${{ env.R_HOME }}
+      - name: Run RCall bridge tests
+        if: success() || failure()
+        run: julia --project=. -e 'using Pkg; Pkg.test(test_args=["bridges", "only=rcall"])'
