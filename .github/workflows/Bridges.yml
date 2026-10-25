@@ -48,31 +48,12 @@ jobs:
             any::BPCells
           cache-version: 2
       - uses: julia-actions/julia-buildpkg@v1
-      - name: R / RCall diagnostics (Linux)
+      # Embedded R (RCall) does not run R's ldpaths script, so libR.so in $R_HOME/lib is not on the
+      # loader path on Linux and R start-up aborts silently. Add it (R's own recommended value).
+      - name: R library path for embedded R (Linux)
         if: runner.os == 'Linux'
-        continue-on-error: true
-        shell: bash
-        run: |
-          set +e +o pipefail
-          julia -e 'using Pkg; Pkg.activate("/tmp/rc"); Pkg.add("RCall")' > /dev/null 2>&1
-          echo "== Rscript"; Rscript -e 'cat(R.version.string, "\n")'; echo "exit=$?"
-          echo "== julia -e 1"; julia --project=/tmp/rc -e 'println("julia ok")'; echo "exit=$?"
-          echo "== using RCall only"; julia --project=/tmp/rc -e 'using RCall; println("loaded")'; echo "exit=$?"
-          sudo apt-get install -y -qq strace > /dev/null
-          T='using RCall; println("R says: ", rcopy(R"1+1"))'
-          echo "== A: plain"
-          julia --project=/tmp/rc -e "$T" 2>&1 | tail -15; echo "exit=${PIPESTATUS[0]}"
-          echo "== B: LD_PRELOAD system libstdc++ / libgfortran"
-          LD_PRELOAD=/lib/x86_64-linux-gnu/libstdc++.so.6:/lib/x86_64-linux-gnu/libgfortran.so.5 julia --project=/tmp/rc -e "$T" 2>&1 | tail -15; echo "exit=${PIPESTATUS[0]}"
-          echo "== C: no LD_LIBRARY_PATH"
-          env -u LD_LIBRARY_PATH julia --project=/tmp/rc -e "$T" 2>&1 | tail -15; echo "exit=${PIPESTATUS[0]}"
-          echo "== strace (plain)"
-          strace -f -e trace=exit_group,openat,write -s 200 -o /tmp/st.txt julia --project=/tmp/rc -e "$T" > /dev/null 2>&1 || true
-          grep -nE 'exit_group' /tmp/st.txt | head -5
-          grep -E 'openat.*(libR|Rblas|Rlapack|libstdc|gfortran|openblas)' /tmp/st.txt | tail -12
-          grep -E 'write\(2,' /tmp/st.txt | tail -15
-      - name: RCall smoke test (diagnostic)
-        continue-on-error: true
+        run: echo "LD_LIBRARY_PATH=$(R RHOME)/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+      - name: RCall smoke test
         run: julia -e 'using Pkg; Pkg.activate(temp = true); Pkg.add("RCall"); using RCall; println(rcopy(R"R.version.string")); println(rcopy(R"as.character(packageVersion(\"SeuratObject\"))"))'
       # Separate processes: libR and libpython are not loaded into the same Julia process.
       - name: Run Zarr + PythonCall bridge tests
