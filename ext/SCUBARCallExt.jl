@@ -52,8 +52,23 @@ scuba_slice <- function(m, f, c) {
 }
 """
 
+# The helpers live in a private R environment, not R's global one: user code (and R CMD check,
+# which clears the global environment between examples) may remove global objects at any time,
+# and the helpers should not clutter the user's workspace. Base is the parent: the helpers use
+# only base functions and `pkg::` calls, so nothing the user defines can mask them.
+const HELPERS = Ref{RObject}()
+
+function _install_helpers()
+    env = reval("new.env(parent = baseenv())")
+    reval(R_HELPERS, env)
+    HELPERS[] = env
+    return env
+end
+
+_rhelper(name::Symbol) = HELPERS[][name]
+
 function __init__()
-    reval(R_HELPERS)
+    _install_helpers()
     return nothing
 end
 
@@ -174,12 +189,12 @@ function RSeuratSource(obj::RObject)
         key = _strip_key(rcopy(String, R"SeuratObject::Key($assay)"))
         isempty(key) && (key = a)
         feats = _rstrings(rcall(:rownames, assay))
-        layers = _rstrings(R"scuba_seurat_layers($assay)")
+        layers = _rstrings(rcall(_rhelper(:scuba_seurat_layers), assay))
         native = Dict{String,BPCellsMatrix}()
         for l in layers
-            m = R"scuba_seurat_layer_data($assay, $l)"
+            m = rcall(_rhelper(:scuba_seurat_layer_data), assay, l)
             if rcopy(Bool, rcall(:inherits, m, "IterableMatrix"))
-                info = R"scuba_bp_dir($m)"
+                info = rcall(_rhelper(:scuba_bp_dir), m)
                 if !rcopy(Bool, rcall(Symbol("is.null"), info))
                     d = rcopy(String, R"$info$dir"); tr = rcopy(Bool, R"$info$transpose")
                     if isdir(d)
@@ -235,7 +250,7 @@ layer_names(s::RSeuratSource, m::AbstractString) = _mod(s, m).layers
 function _layer_obj(s::RSeuratSource, mod::RSeuratModality, layer)
     layer in mod.layers || throw(LayerNotFound(String(layer), mod.key, mod.layers))
     a = mod.assay
-    return R"scuba_seurat_layer_data($(s.obj)[[$a]], $layer)"
+    return rcall(_rhelper(:scuba_seurat_layer_data), R"$(s.obj)[[$a]]", layer)
 end
 function expression(s::RSeuratSource, m::AbstractString, layer::AbstractString, fidx::AbstractVector{Int}, cidx::AbstractVector{Int})
     mod = _mod(s, m)
@@ -243,7 +258,7 @@ function expression(s::RSeuratSource, m::AbstractString, layer::AbstractString, 
     nat === nothing || return pull(nat, fidx, cidx)
     mat = _layer_obj(s, mod, layer)
     f = _rint(collect(fidx)); c = _rint(collect(cidx))
-    return _block_from_r(R"scuba_slice($mat, $f, $c)", length(fidx), length(cidx))
+    return _block_from_r(rcall(_rhelper(:scuba_slice), mat, f, c), length(fidx), length(cidx))
 end
 function expression_columns(s::RSeuratSource, m::AbstractString, layer::AbstractString, fidx::AbstractVector{Int},
                             cidx::AbstractVector{Int}, ::Type{T}) where {T<:Real}
@@ -252,7 +267,7 @@ function expression_columns(s::RSeuratSource, m::AbstractString, layer::Abstract
     nat === nothing || return pull_columns(nat, fidx, cidx, T)
     mat = _layer_obj(s, mod, layer)
     f = _rint(collect(fidx)); c = _rint(collect(cidx))
-    return _columns_from_r(R"scuba_slice($mat, $f, $c)", length(fidx), length(cidx), T)
+    return _columns_from_r(rcall(_rhelper(:scuba_slice), mat, f, c), length(fidx), length(cidx), T)
 end
 function expression!(out, s::RSeuratSource, m::AbstractString, layer::AbstractString, fidx::AbstractVector{Int}, cidx::AbstractVector{Int})
     mod = _mod(s, m)
@@ -260,7 +275,7 @@ function expression!(out, s::RSeuratSource, m::AbstractString, layer::AbstractSt
     nat === nothing || return pull!(out, nat, fidx, cidx)
     mat = _layer_obj(s, mod, layer)
     f = _rint(collect(fidx)); c = _rint(collect(cidx))
-    return _scatter_from_r!(out, R"scuba_slice($mat, $f, $c)", length(fidx), length(cidx))
+    return _scatter_from_r!(out, rcall(_rhelper(:scuba_slice), mat, f, c), length(fidx), length(cidx))
 end
 supports_sparse(::RSeuratSource, ::AbstractString, ::AbstractString) = true
 # A slice read through R is materialised in R (dense for DelayedArray / wrapped BPCells layers,
@@ -277,7 +292,7 @@ function expression_sparse(s::RSeuratSource, m::AbstractString, layer::AbstractS
     nat === nothing || return pull_sparse(nat, fidx, cidx)
     mat = _layer_obj(s, mod, layer)
     f = _rint(collect(fidx)); c = _rint(collect(cidx))
-    return _sparse_block_from_r(R"scuba_slice($mat, $f, $c)", length(fidx), length(cidx))
+    return _sparse_block_from_r(rcall(_rhelper(:scuba_slice), mat, f, c), length(fidx), length(cidx))
 end
 metadata_names(s::RSeuratSource) = s.meta
 function metadata_column(s::RSeuratSource, name::AbstractString, cidx::AbstractVector{Int})
@@ -375,25 +390,25 @@ end
 function expression(s::RSCESource, m::AbstractString, layer::AbstractString, fidx::AbstractVector{Int}, cidx::AbstractVector{Int})
     mat = _assay_obj(s, _mod(s, m), layer)
     f = _rint(collect(fidx)); c = _rint(collect(cidx))
-    return _block_from_r(R"scuba_slice($mat, $f, $c)", length(fidx), length(cidx))
+    return _block_from_r(rcall(_rhelper(:scuba_slice), mat, f, c), length(fidx), length(cidx))
 end
 function expression_columns(s::RSCESource, m::AbstractString, layer::AbstractString, fidx::AbstractVector{Int},
                             cidx::AbstractVector{Int}, ::Type{T}) where {T<:Real}
     mat = _assay_obj(s, _mod(s, m), layer)
     f = _rint(collect(fidx)); c = _rint(collect(cidx))
-    return _columns_from_r(R"scuba_slice($mat, $f, $c)", length(fidx), length(cidx), T)
+    return _columns_from_r(rcall(_rhelper(:scuba_slice), mat, f, c), length(fidx), length(cidx), T)
 end
 function expression!(out, s::RSCESource, m::AbstractString, layer::AbstractString, fidx::AbstractVector{Int}, cidx::AbstractVector{Int})
     mat = _assay_obj(s, _mod(s, m), layer)
     f = _rint(collect(fidx)); c = _rint(collect(cidx))
-    return _scatter_from_r!(out, R"scuba_slice($mat, $f, $c)", length(fidx), length(cidx))
+    return _scatter_from_r!(out, rcall(_rhelper(:scuba_slice), mat, f, c), length(fidx), length(cidx))
 end
 supports_sparse(::RSCESource, ::AbstractString, ::AbstractString) = true
 aggregate_chunk_cells(s::RSCESource, ::AbstractString, ::AbstractString, nfeat::Int) = _r_chunk_cells(nfeat, length(s.cells))
 function expression_sparse(s::RSCESource, m::AbstractString, layer::AbstractString, fidx::AbstractVector{Int}, cidx::AbstractVector{Int})
     mat = _assay_obj(s, _mod(s, m), layer)
     f = _rint(collect(fidx)); c = _rint(collect(cidx))
-    return _sparse_block_from_r(R"scuba_slice($mat, $f, $c)", length(fidx), length(cidx))
+    return _sparse_block_from_r(rcall(_rhelper(:scuba_slice), mat, f, c), length(fidx), length(cidx))
 end
 metadata_names(s::RSCESource) = s.meta
 function metadata_column(s::RSCESource, name::AbstractString, cidx::AbstractVector{Int})
@@ -700,7 +715,7 @@ end
 
 function _precompile_workload()
     _r_running() || RCall.__init__()
-    reval(R_HELPERS)   # normally installed by __init__, which also does not run here
+    _install_helpers()   # normally installed by __init__, which also does not run here
     has(pkg) = rcopy(Bool, reval("requireNamespace('$pkg', quietly = TRUE)"))
     has("Matrix") || return nothing
     reval("""

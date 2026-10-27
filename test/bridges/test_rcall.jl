@@ -61,6 +61,17 @@ using RCall
             pbm = ScubaR.pseudobulk(reval("AML_Seurat"), Int32[1, 2, 1], 2, nothing, "counts", all_cells(ref)[[3, 1, 2]], ["GAPDH"], "mean")
             g = fetch_data(ref, ["X_GAPDH"]; layer = "counts", cells = all_cells(ref)[[3, 1, 2]]).X_GAPDH
             @test vec(pbm.values) ≈ [(g[1] + g[3]) / 2, g[2]] && pbm.n == [2, 1] && pbm.features == ["GAPDH"]
+            # The R helpers live in a private environment: clearing R's global environment (as
+            # R CMD check does between examples, or `rm(list = ls())` in a session) must neither
+            # break an existing source nor building a new one, and the helpers are not visible
+            # in the user's workspace.
+            helpers = ["scuba_slice", "scuba_seurat_layers", "scuba_seurat_layer_data", "scuba_bp_dir"]
+            @test !any(h -> rcopy(Bool, rcall(:exists, h, envir = reval("globalenv()"), inherits = false)), helpers)
+            reval("rm(list = ls(envir = globalenv(), all.names = TRUE), envir = globalenv())")
+            @test fetch_data(src, ["rna_GAPDH"]; layer = "counts").rna_GAPDH == counts
+            @test align(aggregate(src, ct_codes, ng; layer = "counts")[1], fs) ≈ want_counts
+            fresh = rsource(reval("local({ load($(repr(rda))); AML_Seurat })"))
+            @test fetch_data(fresh, ["rna_GAPDH"]; layer = "counts").rna_GAPDH == counts
         end
     else
         @warn "SeuratObject not installed in R; skipping Seurat bridge tests"
