@@ -6,7 +6,7 @@
 | `.h5ad` file | `open_h5ad(path)` | — | lazy; csr/csc/dense `X` and layers; `obsm` data frames become modalities, arrays become reductions; `raw` becomes modality `raw` |
 | zarr store (format 2 or 3) | `open_zarr(path)` | `using Zarr` | same decoder as `.h5ad` |
 | BPCells matrix directory | `open_bpcells(dir)` | — | native reader (packed and unpacked); use as a `LazyMatrix` layer or via `SCUBA.bpcells_modality` |
-| Live Seurat / SCE object | `rsource(obj)` | `using RCall` | slices in R and scatters them from R memory (no Julia copy); BPCells layers read natively; HDF5Array-backed SCE supported |
+| Live Seurat / SCE object | `rsource(obj)` | `using RCall` | slices in R and scatters them from R memory (no Julia copy); BPCells layers read natively; HDF5Array-backed SCE supported; split Seurat v5 layers (`counts.1`, `counts.<group>`) read per piece, with the logical name (`counts`) joining them |
 | Live `anndata.AnnData` | `pysource(adata)` | `using PythonCall` | in-memory or backed; `set_metadata!` writes through to `adata.obs` |
 | MuData `.h5mu` | `open_h5mu(path)` / `open_source(path)` | none (zarr-backed MuData via `using Zarr`) | lazy; modalities `rna_<feature>`, reductions `rna_X_umap` (+ bare alias when unique, global `obsm` arrays by name), metadata = global obs + `<mod>_<col>`; cells absent from a modality read as `NaN` / `missing`; `axis = 0` only |
 | Any source + own metadata | `MetadataOverlay(src; obs)` | none | mutable metadata table over a read-only source (`set_metadata!`) |

@@ -77,6 +77,91 @@ using RCall
         @warn "SeuratObject not installed in R; skipping Seurat bridge tests"
     end
 
+    if have("Seurat") && isfile(fixture_path("AML_Seurat.rda"))
+        @testset "Seurat with split v5 layers" begin
+            rda = fixture_path("AML_Seurat.rda")
+            # an unsplit Assay5 copy and the same object split by batch (counts.<batch>, data.<batch>)
+            reval("""
+            local({ load($(repr(rda))); scuba_t_counts <<- SeuratObject::LayerData(AML_Seurat[["RNA"]], layer = "counts")
+                    scuba_t_batch <<- as.character(AML_Seurat\$Batch) })
+            scuba_t_whole <- suppressWarnings(SeuratObject::CreateSeuratObject(counts = scuba_t_counts))
+            scuba_t_whole <- SeuratObject::SetAssayData(scuba_t_whole, layer = "data", new.data = log1p(scuba_t_counts))
+            scuba_t_whole\$batch <- scuba_t_batch
+            scuba_t_split <- scuba_t_whole
+            scuba_t_split[["RNA"]] <- split(scuba_t_split[["RNA"]], f = scuba_t_split\$batch)
+            """)
+            whole = rsource(:scuba_t_whole); split = rsource(:scuba_t_split)
+            pieces = rcopy(Vector{String}, R"SeuratObject::Layers(scuba_t_split[['RNA']])")
+            @test issubset(["counts", "data"], SCUBA.layer_names(split, "rna"))
+            @test issubset(pieces, SCUBA.layer_names(split, "rna"))
+            fs = ["rna_GAPDH", "rna_MEIS1", "rna_FLT3"]
+            # joined layers read like the unsplit object, default layer and cell subsets included
+            for layer in (nothing, "counts", "data")
+                @test Matrix(fetch_data(split, fs; layer = layer)[!, 2:end]) ≈ Matrix(fetch_data(whole, fs; layer = layer)[!, 2:end])
+            end
+            cl = reverse(all_cells(whole))[1:40]
+            @test Matrix(fetch_data(split, fs; cells = cl)[!, 2:end]) ≈ Matrix(fetch_data(whole, fs; cells = cl)[!, 2:end])
+            Ms, = fetch_matrix(split, nothing; layer = "counts", sparse = true)
+            Mw, = fetch_matrix(whole, nothing; layer = "counts", sparse = true)
+            @test Ms == Mw
+            @test fetch_matrix(split, ["GAPDH"]; layer = "counts")[1] ≈ fetch_matrix(whole, ["GAPDH"]; layer = "counts")[1]
+            codes = Int32.(indexin(rcopy(Vector{String}, R"scuba_t_batch"), sort(unique(rcopy(Vector{String}, R"scuba_t_batch")))))
+            Vs, ns, = aggregate(split, codes, 2; layer = "counts")
+            Vw, nw, = aggregate(whole, codes, 2; layer = "counts")
+            @test Vs ≈ Vw && ns == nw
+            @test aggregate(split, codes, 2; layer = "counts", fun = :mean)[1] ≈ aggregate(whole, codes, 2; layer = "counts", fun = :mean)[1]
+            # an explicit piece: every requested cell, NaN outside the piece; aggregate counts only its cells
+            piece = first(filter(p -> startswith(p, "counts."), pieces))
+            inside = split.modalities["rna"].pieces[piece].ccol .!= 0
+            v = fetch_data(split, ["rna_GAPDH"]; layer = piece).rna_GAPDH
+            @test length(v) == length(all_cells(split))
+            @test v[inside] == fetch_data(whole, ["rna_GAPDH"]; layer = "counts").rna_GAPDH[inside]
+            @test all(isnan, v[.!inside])
+            sp, = fetch_matrix(split, ["GAPDH"]; layer = piece, sparse = true)
+            @test all(iszero, sp[.!inside, 1])
+            @test_throws ArgumentError fetch_data(split, ["rna_GAPDH"]; layer = piece, eltype = Int32)
+            @test aggregate(split, codes, 2; layer = piece)[2] == [count(inside .& (codes .== g)) for g in 1:2]
+            # merged objects whose layers hold different features: joined reads zero-fill
+            reval("""
+            scuba_t_a <- suppressWarnings(SeuratObject::CreateSeuratObject(counts = scuba_t_counts[1:300, scuba_t_batch == "BM_200AB"]))
+            scuba_t_b <- suppressWarnings(SeuratObject::CreateSeuratObject(counts = scuba_t_counts[100:nrow(scuba_t_counts), scuba_t_batch != "BM_200AB"]))
+            scuba_t_merged <- merge(scuba_t_a, scuba_t_b)
+            """)
+            merged = rsource(:scuba_t_merged)
+            @test "counts" in SCUBA.layer_names(merged, "rna")
+            mcells = all_cells(merged); mfeat = features_in_modality(merged)
+            Mm, = fetch_matrix(merged, nothing; layer = "counts", sparse = true)
+            want_m = Matrix(rcopy(R"as.matrix(scuba_t_counts[, $mcells])"))'
+            ord = indexin(mfeat, rcopy(Vector{String}, R"rownames(scuba_t_counts)"))
+            in_a = rcopy(Vector{Bool}, R"$mcells %in% colnames(scuba_t_a)")
+            mask = [(in_a[c] ? ord[f] <= 300 : ord[f] >= 100) for c in eachindex(mcells), f in eachindex(mfeat)]
+            @test Matrix(Mm) ≈ want_m[:, ord] .* mask
+            # BPCells pieces (each split layer its own on-disk matrix) are read natively, in their own shape
+            if have("BPCells")
+                reval("""
+                scuba_t_bp <- scuba_t_split
+                scuba_t_bp_tmp <- tempfile("scuba_t_bp")
+                for (l in grep("^counts[.]", SeuratObject::Layers(scuba_t_bp[["RNA"]]), value = TRUE)) {
+                  m <- SeuratObject::LayerData(scuba_t_bp[["RNA"]], layer = l)
+                  SeuratObject::LayerData(scuba_t_bp[["RNA"]], layer = l) <-
+                    suppressMessages(BPCells::write_matrix_dir(methods::as(m, "IterableMatrix"), file.path(scuba_t_bp_tmp, l)))
+                }
+                """)
+                bp = rsource(:scuba_t_bp)
+                @test all(p -> bp.modalities["rna"].pieces[p].native !== nothing, filter(p -> startswith(p, "counts."), pieces))
+                @test fetch_matrix(bp, nothing; layer = "counts", sparse = true)[1] == Mw
+                @test SCUBA.aggregate_chunk_cells(bp, "rna", "counts", 10) === nothing
+                @test aggregate(bp, codes, 2; layer = "counts")[1] ≈ Vw
+                vb = fetch_data(bp, ["rna_GAPDH"]; layer = piece).rna_GAPDH
+                @test vb[inside] == v[inside] && all(isnan, vb[.!inside])
+                reval("unlink(scuba_t_bp_tmp, recursive = TRUE)")
+            end
+            # clearing R's global environment (R CMD check, rm(list = ls())) leaves split sources readable
+            reval("rm(list = ls(envir = globalenv(), all.names = TRUE), envir = globalenv())")
+            @test Matrix(fetch_data(split, fs; layer = "counts")[!, 2:end]) ≈ Matrix(fetch_data(whole, fs; layer = "counts")[!, 2:end])
+        end
+    end
+
     if have("Seurat") && have("BPCells") && isfile(fixture_path("AML_BPCells.rda"))
         @testset "Seurat with BPCells layers (native fast path)" begin
             rda = fixture_path("AML_BPCells.rda")
@@ -91,7 +176,7 @@ using RCall
             """)
             src = rsource(:AML_BPCells)
             rna = src.modalities["rna"]
-            @test Set(keys(rna.native)) == Set(["counts", "data"])
+            @test Set(k for (k, p) in rna.pieces if p.native !== nothing) == Set(["counts", "data"])
             df = fetch_data(src, ["rna_GAPDH", "ab_CD117-AB", "UMAP_1", "UMAP_2", "Batch", "nCount_RNA", "condensed_cell_type"])
             compare(df)
             @test fetch_data(src, ["rna_UNG"]; layer = "counts").rna_UNG == fetch_data(ref, ["X_UNG"]; layer = "counts").X_UNG

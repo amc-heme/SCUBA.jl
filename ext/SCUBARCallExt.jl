@@ -8,11 +8,11 @@ module SCUBARCallExt
 using SCUBA, RCall, DataFrames, CategoricalArrays, SparseArrays, OrderedCollections
 using SCUBA: AbstractSingleCellSource, SourceCache, LazyMatrix, BPCellsMatrix, pull, pull!, pull_sparse, pull_columns,
              gather_features_by_cells, gather_fc_sparse, gather_fc!, _columns, _put!, ModalityNotFound, LayerNotFound,
-             ReductionNotFound, ReadOnlySource
+             ReductionNotFound, ReadOnlySource, BlockMapSink, SparseSink, GroupSumSink, to_sparse_matrix, _mark_absent!
 import SCUBA: cell_ids, modality_keys, default_modality, default_layer, feature_names, layer_names,
               expression, expression!, expression_columns, expression_sparse, supports_sparse, metadata_names, metadata_column, metadata_table,
               reduction_keys, reduction_ndims, reduction, source_name, set_metadata!, invalidate!,
-              canonical_modality, canonical_reduction, reduction_search_names, aggregate_chunk_cells
+              canonical_modality, canonical_reduction, reduction_search_names, aggregate_chunk_cells, cell_present
 
 const R_HELPERS = """
 scuba_bp_dir <- function(x) {
@@ -43,6 +43,15 @@ scuba_seurat_layers <- function(assay) {
 scuba_seurat_layer_data <- function(assay, layer) {
   if (methods::is(assay, "Assay5")) SeuratObject::LayerData(assay, layer = layer)
   else SeuratObject::GetAssayData(assay, layer = layer)
+}
+scuba_seurat_layer_dimnames <- function(assay, layer) {
+  # Names only: Assay5 keeps the feature / cell membership of every layer (split pieces hold a
+  # subset of cells, and of features after merge()); a v3 Assay's scale.data may hold fewer rows.
+  if (methods::is(assay, "Assay5")) {
+    return(list(rows = SeuratObject::Features(assay, layer = layer), cols = SeuratObject::Cells(assay, layer = layer)))
+  }
+  m <- SeuratObject::GetAssayData(assay, layer = layer)
+  list(rows = rownames(m), cols = colnames(m))
 }
 scuba_slice <- function(m, f, c) {
   s <- m[f, c, drop = FALSE]
@@ -143,12 +152,48 @@ end
 # ---------------------------------------------------------------------------
 # Seurat
 
+# One stored layer of a Seurat assay. In a Seurat v5 assay a layer may hold only some of the
+# object's cells (split layers: counts.<group> after split(), counts.1 / counts.2 after merge())
+# and only some of the assay's features, so reads translate object-level positions to the
+# layer's own rows and columns.
+struct RSeuratPiece
+    name::String
+    frow::Vector{Int}                       # assay feature index -> layer row (0: not in the layer)
+    ccol::Vector{Int}                       # object cell index -> layer column (0: not in the layer)
+    full::Bool                              # every feature and cell, in object order (unsplit layer)
+    native::Union{Nothing,BPCellsMatrix}    # native BPCells reader (in the layer's own shape)
+end
+
 struct RSeuratModality
     key::String                  # SCUBA key: Seurat Key() without trailing "_"
     assay::String                # assay name
     features::Vector{String}
-    layers::Vector{String}
-    native::Dict{String,BPCellsMatrix}   # layer => native BPCells reader
+    pieces::OrderedDict{String,RSeuratPiece}    # stored layers, by name
+    joined::OrderedDict{String,Vector{String}}  # logical layer (e.g. "counts") => its split pieces
+end
+
+# Seurat's own layers, which a split may leave as a single piece (split() by a one-level factor)
+const _SEURAT_BASE_LAYERS = ("counts", "data", "scale.data")
+
+# Logical names of split layers: a prefix `b` (cut at a '.') that is not itself a layer, whose
+# pieces are the layers named `b.<suffix>`. Group labels may contain dots ("counts.BM.200"), so
+# every '.' is a candidate cut; a prefix needs two pieces (one for Seurat's own layer names, so
+# "scale.data" alone is not read as a split of "scale"), and of prefixes covering the same pieces
+# the longest wins ("scale.data" over "scale" for scale.data.1 / scale.data.2).
+function _joined_layers(layers::Vector{String})
+    candidates = OrderedDict{String,Vector{String}}()
+    for l in layers, k in findall(==('.'), l)
+        b = l[1:prevind(l, k)]
+        (isempty(b) || b in layers || haskey(candidates, b)) && continue
+        members = filter(x -> startswith(x, b * "."), layers)
+        (length(members) >= 2 || (b in _SEURAT_BASE_LAYERS && !isempty(members))) && (candidates[b] = members)
+    end
+    joined = OrderedDict{String,Vector{String}}()
+    for (b, members) in candidates
+        any(c -> c != b && length(c) > length(b) && candidates[c] == members, keys(candidates)) && continue
+        joined[b] = members
+    end
+    return joined
 end
 
 struct RSeuratReduction
@@ -180,6 +225,7 @@ _strip_key(k::AbstractString) = endswith(k, "_") ? String(k[1:end-1]) : String(k
 function RSeuratSource(obj::RObject)
     rcopy(Bool, rcall(:inherits, obj, "Seurat")) || throw(ArgumentError("object is not a Seurat object"))
     cells = _rstrings(rcall(:colnames, obj))
+    cell_pos = Dict(c => k for (k, c) in enumerate(cells))
     default_assay = rcopy(String, R"SeuratObject::DefaultAssay($obj)")
     assays = _rstrings(R"SeuratObject::Assays($obj)")
     mods = OrderedDict{String,RSeuratModality}()
@@ -190,8 +236,22 @@ function RSeuratSource(obj::RObject)
         isempty(key) && (key = a)
         feats = _rstrings(rcall(:rownames, assay))
         layers = _rstrings(rcall(_rhelper(:scuba_seurat_layers), assay))
-        native = Dict{String,BPCellsMatrix}()
+        feat_pos = Dict(f => k for (k, f) in enumerate(feats))
+        pieces = OrderedDict{String,RSeuratPiece}()
         for l in layers
+            dn = rcall(_rhelper(:scuba_seurat_layer_dimnames), assay, l)
+            rows = _rstrings(R"$dn$rows"); cols = _rstrings(R"$dn$cols")
+            full = rows == feats && cols == cells
+            frow = zeros(Int, length(feats)); ccol = zeros(Int, length(cells))
+            if !full
+                for (r, f) in enumerate(rows)
+                    k = get(feat_pos, f, 0); k == 0 || (frow[k] = r)
+                end
+                for (c, cell) in enumerate(cols)
+                    k = get(cell_pos, cell, 0); k == 0 || (ccol[k] = c)
+                end
+            end
+            native = nothing
             m = rcall(_rhelper(:scuba_seurat_layer_data), assay, l)
             if rcopy(Bool, rcall(:inherits, m, "IterableMatrix"))
                 info = rcall(_rhelper(:scuba_bp_dir), m)
@@ -199,10 +259,11 @@ function RSeuratSource(obj::RObject)
                     d = rcopy(String, R"$info$dir"); tr = rcopy(Bool, R"$info$transpose")
                     if isdir(d)
                         # Orientation of the files relative to the layer: decided by the layer's
-                        # dimensions (features × cells); objects built as t(write_matrix_dir(t(m)))
-                        # store cells × features. For square layers the R transpose flag decides
-                        # (files are transposed when flag ⊻ row-major storage).
-                        want = (length(feats), length(cells))
+                        # own dimensions (features × cells it holds; a split piece is smaller than
+                        # the assay); objects built as t(write_matrix_dir(t(m))) store cells ×
+                        # features. For square layers the R transpose flag decides (files are
+                        # transposed when flag ⊻ row-major storage).
+                        want = (length(rows), length(cols))
                         bm = BPCellsMatrix(d)
                         swapped = (bm.nrow, bm.ncol) != want && (bm.ncol, bm.nrow) == want
                         square = bm.nrow == bm.ncol && (bm.nrow, bm.ncol) == want
@@ -210,15 +271,16 @@ function RSeuratSource(obj::RObject)
                             bm = BPCellsMatrix(d; transpose = true)
                         end
                         if (bm.nrow, bm.ncol) == want
-                            native[l] = bm
+                            native = bm
                         else
                             @warn "SCUBA: BPCells directory shape does not match the Seurat layer; reading layer through R" assay = a layer = l dir = d disk = (bm.nrow, bm.ncol) layer_shape = want
                         end
                     end
                 end
             end
+            pieces[l] = RSeuratPiece(l, frow, ccol, full, native)
         end
-        mods[key] = RSeuratModality(key, a, feats, layers, native)
+        mods[key] = RSeuratModality(key, a, feats, pieces, _joined_layers(layers))
         alias[a] = key
     end
     reds = OrderedDict{String,RSeuratReduction}()
@@ -246,53 +308,143 @@ function _mod(s::RSeuratSource, m)
     return s.modalities[k]
 end
 feature_names(s::RSeuratSource, m::AbstractString) = _mod(s, m).features
-layer_names(s::RSeuratSource, m::AbstractString) = _mod(s, m).layers
-function _layer_obj(s::RSeuratSource, mod::RSeuratModality, layer)
-    layer in mod.layers || throw(LayerNotFound(String(layer), mod.key, mod.layers))
-    a = mod.assay
-    return rcall(_rhelper(:scuba_seurat_layer_data), R"$(s.obj)[[$a]]", layer)
+# Logical (joined) names first, then the stored layers, so resolve_layer() accepts "counts" /
+# "data" on split assays as well as every piece.
+layer_names(s::RSeuratSource, m::AbstractString) = (mod = _mod(s, m); vcat(collect(keys(mod.joined)), collect(keys(mod.pieces))))
+
+# The stored pieces a layer name reads: one stored layer, or every piece of a joined layer.
+function _pieces(mod::RSeuratModality, layer::AbstractString)
+    haskey(mod.pieces, layer) && return [mod.pieces[layer]], false
+    haskey(mod.joined, layer) && return [mod.pieces[p] for p in mod.joined[layer]], true
+    throw(LayerNotFound(String(layer), mod.key, vcat(collect(keys(mod.joined)), collect(keys(mod.pieces)))))
 end
+_piece_obj(s::RSeuratSource, mod::RSeuratModality, piece::RSeuratPiece) =
+    rcall(_rhelper(:scuba_seurat_layer_data), R"$(s.obj)[[$(mod.assay)]]", piece.name)
+# The single unsplit layer a request reads, or `nothing` when it needs the piece-wise path.
+function _full_piece(mod::RSeuratModality, layer::AbstractString)
+    pieces, _ = _pieces(mod, layer)
+    return length(pieces) == 1 && pieces[1].full ? pieces[1] : nothing
+end
+
+# Read `piece` at the requested object positions into `out`; positions the piece does not hold
+# are not written. Returns the request positions of the cells and features it does hold.
+function _read_piece!(out, s::RSeuratSource, mod::RSeuratModality, piece::RSeuratPiece,
+                      fidx::AbstractVector{Int}, cidx::AbstractVector{Int})
+    if piece.full
+        if piece.native !== nothing
+            pull!(out, piece.native, fidx, cidx)
+        else
+            f = _rint(collect(fidx)); c = _rint(collect(cidx))
+            _scatter_from_r!(out, rcall(_rhelper(:scuba_slice), _piece_obj(s, mod, piece), f, c), length(fidx), length(cidx))
+        end
+        return collect(1:length(cidx)), collect(1:length(fidx))
+    end
+    local_cells = piece.ccol[cidx]; present = findall(!=(0), local_cells)
+    local_feats = piece.frow[fidx]; fpresent = findall(!=(0), local_feats)
+    if !isempty(present) && !isempty(fpresent)
+        sink = BlockMapSink(out, present, fpresent)
+        lf = local_feats[fpresent]; lc = local_cells[present]
+        if piece.native !== nothing
+            pull!(sink, piece.native, lf, lc)
+        else
+            _scatter_from_r!(sink, rcall(_rhelper(:scuba_slice), _piece_obj(s, mod, piece), _rint(lf), _rint(lc)), length(lf), length(lc))
+        end
+    end
+    return present, fpresent
+end
+
+# Positions a layer does not hold: NaN in dense and column outputs (an ArgumentError for a
+# non-float eltype, as for MuData), nothing in sparse and group-sum sinks.
+_mark_absent_block!(out, rows, cols, nf) = isempty(rows) || isempty(cols) ? out : _absent_cells!(out, rows, cols)
+function _absent_cells!(out::AbstractMatrix, rows, cols)
+    eltype(out) <: AbstractFloat || throw(ArgumentError("cells or features outside a split Seurat layer are NaN, which needs a floating-point eltype, got $(eltype(out))"))
+    @inbounds for j in cols, i in rows
+        out[i, j] = NaN
+    end
+    return out
+end
+function _absent_cells!(cols_out::Vector{<:AbstractVector}, rows, cols)
+    eltype(cols_out[1]) <: AbstractFloat || throw(ArgumentError("cells or features outside a split Seurat layer are NaN, which needs a floating-point eltype, got $(eltype(cols_out[1]))"))
+    @inbounds for j in cols, i in rows
+        cols_out[j][i] = NaN
+    end
+    return cols_out
+end
+_absent_cells!(out::Union{SparseSink,GroupSumSink}, rows, cols) = out
+
+# Every read of a Seurat source goes through here. Joined layers (the logical "counts" of a split
+# assay) read each piece into its cells: a feature a piece lacks stays zero for its cells, as
+# after SeuratObject::JoinLayers(). An explicit piece returns every requested cell, NaN outside
+# the piece (and for features it lacks), like cells absent from a MuData modality.
+function _seurat_read!(out, s::RSeuratSource, m::AbstractString, layer::AbstractString,
+                       fidx::AbstractVector{Int}, cidx::AbstractVector{Int})
+    mod = _mod(s, m)
+    pieces, joined = _pieces(mod, layer)
+    nf = length(fidx); nc = length(cidx)
+    if joined
+        covered = falses(nc)
+        for piece in pieces
+            present, _ = _read_piece!(out, s, mod, piece, fidx, cidx)
+            covered[present] .= true
+        end
+        all(covered) || _mark_absent_block!(out, findall(!, covered), collect(1:nf), nf)
+    else
+        present, fpresent = _read_piece!(out, s, mod, pieces[1], fidx, cidx)
+        if !pieces[1].full
+            _mark_absent_block!(out, setdiff(1:nc, present), collect(1:nf), nf)
+            _mark_absent_block!(out, present, setdiff(1:nf, fpresent), nf)
+        end
+    end
+    return out
+end
+
 function expression(s::RSeuratSource, m::AbstractString, layer::AbstractString, fidx::AbstractVector{Int}, cidx::AbstractVector{Int})
     mod = _mod(s, m)
-    nat = get(mod.native, String(layer), nothing)
-    nat === nothing || return pull(nat, fidx, cidx)
-    mat = _layer_obj(s, mod, layer)
+    piece = _full_piece(mod, layer)
+    piece === nothing && return _seurat_read!(zeros(Float64, length(cidx), length(fidx)), s, m, layer, fidx, cidx)
+    piece.native === nothing || return pull(piece.native, fidx, cidx)
     f = _rint(collect(fidx)); c = _rint(collect(cidx))
-    return _block_from_r(rcall(_rhelper(:scuba_slice), mat, f, c), length(fidx), length(cidx))
+    return _block_from_r(rcall(_rhelper(:scuba_slice), _piece_obj(s, mod, piece), f, c), length(fidx), length(cidx))
 end
 function expression_columns(s::RSeuratSource, m::AbstractString, layer::AbstractString, fidx::AbstractVector{Int},
                             cidx::AbstractVector{Int}, ::Type{T}) where {T<:Real}
     mod = _mod(s, m)
-    nat = get(mod.native, String(layer), nothing)
-    nat === nothing || return pull_columns(nat, fidx, cidx, T)
-    mat = _layer_obj(s, mod, layer)
+    piece = _full_piece(mod, layer)
+    piece === nothing && return _seurat_read!(_columns(T, length(cidx), length(fidx)), s, m, layer, fidx, cidx)
+    piece.native === nothing || return pull_columns(piece.native, fidx, cidx, T)
     f = _rint(collect(fidx)); c = _rint(collect(cidx))
-    return _columns_from_r(rcall(_rhelper(:scuba_slice), mat, f, c), length(fidx), length(cidx), T)
+    return _columns_from_r(rcall(_rhelper(:scuba_slice), _piece_obj(s, mod, piece), f, c), length(fidx), length(cidx), T)
 end
-function expression!(out, s::RSeuratSource, m::AbstractString, layer::AbstractString, fidx::AbstractVector{Int}, cidx::AbstractVector{Int})
-    mod = _mod(s, m)
-    nat = get(mod.native, String(layer), nothing)
-    nat === nothing || return pull!(out, nat, fidx, cidx)
-    mat = _layer_obj(s, mod, layer)
-    f = _rint(collect(fidx)); c = _rint(collect(cidx))
-    return _scatter_from_r!(out, rcall(_rhelper(:scuba_slice), mat, f, c), length(fidx), length(cidx))
-end
+expression!(out, s::RSeuratSource, m::AbstractString, layer::AbstractString, fidx::AbstractVector{Int}, cidx::AbstractVector{Int}) =
+    _seurat_read!(out, s, m, layer, fidx, cidx)
 supports_sparse(::RSeuratSource, ::AbstractString, ::AbstractString) = true
 # A slice read through R is materialised in R (dense for DelayedArray / wrapped BPCells layers,
 # dgCMatrix otherwise), so `aggregate` walks R-backed layers in cell chunks bounded by CHUNK_BYTES.
 # Native BPCells layers stream and need no chunking.
 _r_chunk_cells(nfeat::Int, ncells::Int) = clamp(SCUBA.CHUNK_BYTES[] ÷ (8 * max(1, nfeat)), 1, max(1, ncells))
 function aggregate_chunk_cells(s::RSeuratSource, m::AbstractString, layer::AbstractString, nfeat::Int)
-    haskey(_mod(s, m).native, String(layer)) && return nothing
+    pieces, _ = _pieces(_mod(s, m), layer)
+    all(p -> p.native !== nothing, pieces) && return nothing
     return _r_chunk_cells(nfeat, length(s.cells))
+end
+# Cells an explicit piece does not hold do not count towards aggregate()'s cell numbers.
+function cell_present(s::RSeuratSource, m::AbstractString, cidx::AbstractVector{Int}; layer = nothing)
+    layer === nothing && return trues(length(cidx))
+    pieces, joined = _pieces(_mod(s, m), String(layer))
+    present = falses(length(cidx))
+    for piece in pieces
+        piece.full && return trues(length(cidx))
+        present .|= piece.ccol[cidx] .!= 0
+    end
+    return present
 end
 function expression_sparse(s::RSeuratSource, m::AbstractString, layer::AbstractString, fidx::AbstractVector{Int}, cidx::AbstractVector{Int})
     mod = _mod(s, m)
-    nat = get(mod.native, String(layer), nothing)
-    nat === nothing || return pull_sparse(nat, fidx, cidx)
-    mat = _layer_obj(s, mod, layer)
+    piece = _full_piece(mod, layer)
+    piece === nothing && return to_sparse_matrix(_seurat_read!(SparseSink(Float64, length(fidx)), s, m, layer, fidx, cidx), length(cidx))
+    piece.native === nothing || return pull_sparse(piece.native, fidx, cidx)
     f = _rint(collect(fidx)); c = _rint(collect(cidx))
-    return _sparse_block_from_r(rcall(_rhelper(:scuba_slice), mat, f, c), length(fidx), length(cidx))
+    return _sparse_block_from_r(rcall(_rhelper(:scuba_slice), _piece_obj(s, mod, piece), f, c), length(fidx), length(cidx))
 end
 metadata_names(s::RSeuratSource) = s.meta
 function metadata_column(s::RSeuratSource, name::AbstractString, cidx::AbstractVector{Int})
@@ -455,6 +607,10 @@ using SCUBA, RCall, DataFrames, CategoricalArrays
 using OrderedCollections: OrderedDict
 
 const S = SCUBA
+
+# Capability flags read by the R package (isdefined(ScubaR, :FLAG)) to decide what it may route
+# here; older SCUBA.jl versions lack them, so the R side keeps those objects on its own engine.
+const SPLIT_LAYERS = true   # Seurat v5 split layers (counts.1, counts.<group>, ...) are read correctly
 
 # Cache of wrapped sources keyed by the R object pointer. Holding the RObject keeps the SEXP
 # alive (RCall preserves it), so an address cannot be reused by a different object while cached.
@@ -733,6 +889,12 @@ function _precompile_workload()
         scuba_pc_seurat[["umap"]] <- SeuratObject::CreateDimReducObject(embeddings = scuba_pc_umap, key = "UMAP_", assay = "RNA")
         """)
         push!(objs, (reval("scuba_pc_seurat"), "rna_g1", "umap"))
+        # split v5 layers (counts.a / counts.b, data.a / data.b): the joined and piece-wise reads
+        reval("""
+        scuba_pc_split <- scuba_pc_seurat
+        scuba_pc_split[["RNA"]] <- split(scuba_pc_split[["RNA"]], f = scuba_pc_split\$group)
+        """)
+        push!(objs, (reval("scuba_pc_split"), "rna_g1", "umap"))
         if has("BPCells")
             # cellDIVER-style objects: BPCells matrices on disk, in both storage orders
             reval("""
@@ -799,6 +961,10 @@ function _precompile_workload()
         ScubaR.fetch_reduction(obj, red, nothing, [1, 2], false)
         ScubaR.pseudobulk(obj, Int32[1, 2, 1, 2], 2, nothing, "counts", nothing, nothing)
         ScubaR.pseudobulk(obj, Int32[1, 1], 1, nothing, "counts", ["c2", "c4"], ["g1", "g3"], "mean")
+        if "counts.a" in SCUBA.layer_names(src, SCUBA.default_modality(src))
+            SCUBA.fetch_data(src, [feat]; layer = "counts.a")
+            SCUBA.aggregate(src, Int32[1, 1, 1, 1], 1; layer = "counts.a")
+        end
         ScubaR.clear_cache()
     end
     # file-backed path (the R package's scuba_source class)

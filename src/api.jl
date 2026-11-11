@@ -143,6 +143,11 @@ function _fetch_resolved(src::AbstractSingleCellSource, found::AbstractVector{Re
             M = expression(src, mod, lay, fidx, cell_idx)
             size(M) == (length(cell_idx), length(fidx)) ||
                 error("backend $(source_name(src)) returned a $(size(M)) block for $(length(cell_idx)) cells × $(length(fidx)) features")
+            # absent values (cells outside a MuData modality or a split Seurat layer) are NaN, which
+            # an integer result cannot hold: say so instead of failing in the conversion
+            if !(eltype <: AbstractFloat) && any(isnan, M)
+                throw(ArgumentError("the requested values include absent (NaN) entries, which need a floating-point eltype, got $eltype"))
+            end
             cols = Vector{eltype}[Vector{eltype}(view(M, :, j)) for j in 1:size(M, 2)]
         else
             cols = _expression_columns(src, mod, lay, fidx, cell_idx, eltype, alloc)
@@ -323,7 +328,7 @@ function aggregate(src::AbstractSingleCellSource, codes::AbstractVector{<:Intege
     est > MAX_DENSE_BYTES[] && scuba_warn(:large_result,
         "The aggregated result is large (~$(round(est / 2^30; digits = 1)) GiB dense for $ng groups × " *
         "$(length(fidx)) features). Consider fewer features or fewer groups.")
-    present = cell_present(src, mod, cell_idx)
+    present = cell_present(src, mod, cell_idx; layer = lay)
     n = zeros(Int, ng)
     @inbounds for (k, g) in enumerate(c32)
         g != 0 && present[k] && (n[g] += 1)
