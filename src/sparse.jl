@@ -70,6 +70,21 @@ end
 @inline _put!(s::RowMapSink, i::Int, j::Int, v) = _put!(s.inner, s.rows[i], j, v)
 
 """
+    BlockMapSink(inner, rows, cols)
+
+Sink adaptor mapping both positions of the writer: cell `i` to `rows[i]` and feature `j` to
+`cols[j]` in `inner`. Used when a block holds only some of the requested cells *and* features,
+such as one piece of a split Seurat v5 layer; positions it never writes keep `inner`'s initial
+value (zero for dense and column outputs, no entry for sparse and group-sum sinks).
+"""
+struct BlockMapSink{S}
+    inner::S
+    rows::Vector{Int}
+    cols::Vector{Int}
+end
+@inline _put!(s::BlockMapSink, i::Int, j::Int, v) = _put!(s.inner, s.rows[i], s.cols[j], v)
+
+"""
     GroupSumSink(T, codes, ngroups, nfeat)
 
 Reduction sink for [`aggregate`](@ref): `_put!(s, i, j, v)` adds `v` to `acc[codes[i], j]`, where

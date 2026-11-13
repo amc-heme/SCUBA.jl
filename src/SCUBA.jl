@@ -42,7 +42,7 @@ export fetch_data, fetch_feature, fetch_matrix, aggregate, fetch_metadata, fetch
        all_cells, get_all_cells, meta_varnames, all_keys, features_in_modality, features_in_assay,
        reduction_dimnames, default_layer, default_reduction, default_modality, unique_values, n_unique,
        set_metadata!, update_object_metadata!, snapshot, resolve_vars, cell_column, cells, drop_cells, eachchunk,
-       GroupSumSink
+       GroupSumSink, BlockMapSink
 # sources
 export AbstractSingleCellSource, MemoryAnnData, Modality, MetadataOverlay, H5ADSource, open_h5ad, MuDataSource, open_h5mu, open_source, BPCellsMatrix, open_bpcells,
        rsource, pysource, open_zarr, to_pandas, to_scipy, to_numpy

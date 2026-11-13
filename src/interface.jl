@@ -124,13 +124,15 @@ _convert_sparse(::Type{T}, A::SparseMatrixCSC) where {T} = eltype(A) === T ? A :
 """`check_eltype(src, T)` — throw an `ArgumentError` when the backend cannot produce results of element type `T` (default: any `Real`; MuData needs a float for absent cells)."""
 check_eltype(::AbstractSingleCellSource, ::Type{T}) where {T} = nothing
 """
-    cell_present(src, modality, cell_idx) -> AbstractVector{Bool}
+    cell_present(src, modality, cell_idx; layer = nothing) -> AbstractVector{Bool}
 
-Which of the requested cells hold values in `modality`. Cells absent from a MuData modality are
-not present and do not count towards the cell numbers reported by [`aggregate`](@ref). Default:
-every cell.
+Which of the requested cells hold values in `modality` (and, for backends whose layers hold
+different cells, in `layer`). Cells absent from a MuData modality, or from one piece of a split
+Seurat v5 layer, are not present and do not count towards the cell numbers reported by
+[`aggregate`](@ref). Default: every cell.
 """
-cell_present(::AbstractSingleCellSource, ::AbstractString, cell_idx::AbstractVector{Int}) = trues(length(cell_idx))
+cell_present(::AbstractSingleCellSource, ::AbstractString, cell_idx::AbstractVector{Int}; layer = nothing) =
+    trues(length(cell_idx))
 """
     aggregate_chunk_cells(src, modality, layer, nfeat) -> Union{Nothing,Int}
 

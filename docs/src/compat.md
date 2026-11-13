@@ -18,6 +18,8 @@ cases. The golden tests (`fixtures/cases.json`) flag each divergence.
 | Unknown cells | class-dependent | `CellsNotFound` error |
 | `fetch_feature` names | keyed names from any assay (case-insensitive), grouped per assay; a *bare* name that is also a metadata column resolved metadata-first through `fetch_data` on non-BPCells assays | keyed names from any modality (case-sensitive), grouped per modality, requested order and names kept; bare names are only searched in the main modality (the R shim keeps colliding bare names on the legacy method) |
 | Large queries | warning at ≥ 1000 vars | warning when the dense result exceeds `SCUBA.MAX_DENSE_BYTES[]` (1 GiB) |
+| Split Seurat v5 layers, logical name (`layer = "counts"` on `counts.1`, `counts.2`, …) | `FetchData` joins the pieces | joined: every cell, zero for features a piece does not hold (as after `JoinLayers`) |
+| Split Seurat v5 layers, one piece (`layer = "counts.1"`) | `FetchData` drops cells outside the piece (with a message) | every requested cell, `NaN` outside the piece and for features it lacks (no entries in sparse results; an integer `eltype` is an error), like cells absent from a MuData modality |
 | Layer missing in a single-layer modality (e.g. `obsm` data frame) | ignored (AnnData) or error (SCE) | the only layer is used, with a `:layer_substituted` warning |
 | `fetch_metadata(return_class = "vector")` | argument | method `fetch_metadata(src, var)` |
 | `update_object_metadata` | returns a modified copy | `set_metadata!` mutates in place; R/Seurat bridges are read-only (assign in R) |

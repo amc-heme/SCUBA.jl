@@ -53,6 +53,7 @@ the nonzeros, and `GroupSumSink` keeps only group sums.
 ```@docs
 SCUBA.SparseSink
 SCUBA.RowMapSink
+BlockMapSink
 GroupSumSink
 ```
 
