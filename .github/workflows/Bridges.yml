@@ -53,6 +53,12 @@ jobs:
       - name: R library path for embedded R (Linux)
         if: runner.os == 'Linux'
         run: echo "LD_LIBRARY_PATH=$(R RHOME)/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+      # RCall records R's location when it is built and reuses it while that path exists in its
+      # deps.jl; the julia-actions cache restores that file (and Conda's) from an older run, so an
+      # R point release on the runner (/opt/R/4.6.1 -> 4.6.2) leaves RCall pointing at a missing
+      # libR.so. Setting R_HOME makes the build re-detect R; Pkg.build also rebuilds Conda.
+      - name: Rebuild RCall against this runner's R
+        run: R_HOME="$(R RHOME)" julia -e 'using Pkg; Pkg.activate(temp = true); Pkg.add("RCall"); Pkg.build("RCall")'
       - name: RCall smoke test
         run: julia -e 'using Pkg; Pkg.activate(temp = true); Pkg.add("RCall"); using RCall; println(rcopy(R"R.version.string")); println(rcopy(R"as.character(packageVersion(\"SeuratObject\"))"))'
       # Separate processes: libR and libpython are not loaded into the same Julia process.
